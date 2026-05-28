@@ -46,8 +46,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "dropmedia",
-      "repo": "dropmedia"
+      "owner": "vengeance3355",
+      "repo": "DropMedia"
     },
     "linux": {
       "target": [
