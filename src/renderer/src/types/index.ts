@@ -30,6 +30,7 @@ export interface DownloadItem {
   error?: string
   completedAt?: number
   outputDir?: string
+  outputPath?: string
 }
 
 export interface AppSettings {

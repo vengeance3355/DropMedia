@@ -5,11 +5,7 @@
 @tailwind utilities;
 
 @layer base {
-  * {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
 
   html, body, #root {
     height: 100%;
@@ -19,37 +15,76 @@
     user-select: none;
   }
 
-  /* Metin seçilebilir alanlar */
-  input, textarea {
-    user-select: text;
+  input, textarea { user-select: text; }
+
+  /* ── Light tema CSS değişkenleri ── */
+  :root {
+    --bg-gradient:    linear-gradient(135deg, #f0f0ff 0%, #e8eeff 50%, #f0f4ff 100%);
+    --blob-1:         rgba(124, 58, 237, 0.08);
+    --blob-2:         rgba(59, 130, 246, 0.06);
+    --blob-3:         rgba(99, 102, 241, 0.05);
+    --surface:        rgba(255, 255, 255, 0.7);
+    --surface-card:   rgba(255, 255, 255, 0.8);
+    --surface-hover:  rgba(255, 255, 255, 0.9);
+    --border:         rgba(0, 0, 0, 0.08);
+    --text-primary:   rgba(15, 10, 30, 0.9);
+    --text-secondary: rgba(15, 10, 30, 0.5);
+    --text-muted:     rgba(15, 10, 30, 0.3);
+    --scrollbar:      rgba(0, 0, 0, 0.12);
+  }
+
+  /* Dark tema — varsayılan */
+  .dark {
+    --bg-gradient:    linear-gradient(135deg, #0f0a1e 0%, #1a0a2e 50%, #0f1a2e 100%);
+    --blob-1:         rgba(124, 58, 237, 0.20);
+    --blob-2:         rgba(59, 130, 246, 0.15);
+    --blob-3:         rgba(99, 102, 241, 0.10);
+    --surface:        rgba(15, 10, 30, 0.95);
+    --surface-card:   rgba(255, 255, 255, 0.05);
+    --surface-hover:  rgba(255, 255, 255, 0.08);
+    --border:         rgba(255, 255, 255, 0.10);
+    --text-primary:   rgba(255, 255, 255, 0.90);
+    --text-secondary: rgba(255, 255, 255, 0.50);
+    --text-muted:     rgba(255, 255, 255, 0.25);
+    --scrollbar:      rgba(255, 255, 255, 0.10);
   }
 }
 
 @layer utilities {
   /* Scrollbar */
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 4px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
-  }
+  .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 999px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover { filter: brightness(1.4); }
 
-  /* Cam efekti */
+  /* Light tema utility overrides */
+  .light .bg-gradient-dark { background: var(--bg-gradient) !important; }
+  .light .bg-white\/5  { background: rgba(255,255,255,0.60) !important; backdrop-filter: blur(12px); }
+  .light .bg-white\/8  { background: rgba(255,255,255,0.70) !important; }
+  .light .bg-white\/10 { background: rgba(255,255,255,0.75) !important; }
+  .light .border-white\/8  { border-color: rgba(0,0,0,0.08) !important; }
+  .light .border-white\/10 { border-color: rgba(0,0,0,0.10) !important; }
+  .light .text-white        { color: rgba(15,10,30,0.90) !important; }
+  .light .text-white\/80    { color: rgba(15,10,30,0.75) !important; }
+  .light .text-white\/70    { color: rgba(15,10,30,0.65) !important; }
+  .light .text-white\/60    { color: rgba(15,10,30,0.55) !important; }
+  .light .text-white\/50    { color: rgba(15,10,30,0.45) !important; }
+  .light .text-white\/40    { color: rgba(15,10,30,0.35) !important; }
+  .light .text-white\/30    { color: rgba(15,10,30,0.28) !important; }
+  .light .text-white\/20    { color: rgba(15,10,30,0.20) !important; }
+  .light .placeholder-white\/30::placeholder { color: rgba(15,10,30,0.28) !important; }
+  .light .bg-\[#100c20\]   { background: rgba(240,240,255,0.95) !important; }
+  .light .bg-\[#0a0a0f\]   { background: #f4f4ff !important; }
+  .light .bg-black\/60      { background: rgba(15,10,30,0.35) !important; }
+
+  /* Glass efekti */
   .glass {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--surface-card);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
   }
 
-  /* Metin kırpma */
   .line-clamp-2 {
     display: -webkit-box;
     -webkit-line-clamp: 2;
