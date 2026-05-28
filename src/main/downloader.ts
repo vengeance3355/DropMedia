@@ -4,6 +4,7 @@ import { existsSync, chmodSync } from 'fs'
 import { createWriteStream } from 'fs'
 import { get as httpsGet } from 'https'
 import Store from 'electron-store'
+import { logError, logStat } from './logger'
 
 const store = new Store()
 const activeDownloads = new Map<string, ReturnType<typeof spawn>>()
@@ -106,7 +107,6 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
 
       proc.on('close', (code) => {
         if (code !== 0) {
-          // Hata mesajını kullanıcıya anlamlı şekilde ilet
           const msg = stderr.includes('Unsupported URL')
             ? 'Bu URL desteklenmiyor. Geçerli bir video URL\'si girin.'
             : stderr.includes('Private')
@@ -114,6 +114,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
             : stderr.includes('not a video')
             ? 'Bu bağlantı bir video içermiyor.'
             : stderr.trim() || 'Video bilgisi alınamadı.'
+          logError({ errorType: 'fetch', errorMessage: msg, stackTrace: stderr, url })
           reject(new Error(msg))
           return
         }
@@ -150,16 +151,27 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
       if (msg) getMainWindow()?.webContents.send('download-log', { id, msg })
     })
 
+    const startMs = Date.now()
+
     proc.on('close', (code) => {
       activeDownloads.delete(id)
-      getMainWindow()?.webContents.send('download-complete', {
-        id, success: code === 0, code
-      })
+      const success = code === 0
+      getMainWindow()?.webContents.send('download-complete', { id, success, code })
+
+      // İstatistik ve hata log'u gönder
+      const platform = detectPlatformName(url)
+      if (success) {
+        logStat({ platform, format, downloadMs: Date.now() - startMs, success: true })
+      } else {
+        logError({ errorType: 'download', errorMessage: `Exit code ${code}`, url, format })
+        logStat({ platform, format, downloadMs: Date.now() - startMs, success: false })
+      }
     })
 
-    proc.on('error', () => {
+    proc.on('error', (err: Error) => {
       activeDownloads.delete(id)
       getMainWindow()?.webContents.send('download-complete', { id, success: false, code: -1 })
+      logError({ errorType: 'download', errorMessage: err.message, stackTrace: err.stack, url, format })
     })
 
     return { started: true }
@@ -337,6 +349,17 @@ function buildAvailableFormats(rawFormats: RawFormat[], ffmpeg: boolean) {
     : [{ id: 'm4a', label: 'M4A (Ses)', type: 'audio' as const }]
 
   return [...videoFormats, ...audioFormats]
+}
+
+function detectPlatformName(url: string): string {
+  const u = url.toLowerCase()
+  if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube'
+  if (u.includes('twitter.com') || u.includes('x.com'))   return 'twitter'
+  if (u.includes('instagram.com'))  return 'instagram'
+  if (u.includes('tiktok.com'))     return 'tiktok'
+  if (u.includes('twitch.tv'))      return 'twitch'
+  if (u.includes('vimeo.com'))      return 'vimeo'
+  return 'other'
 }
 
 function qLabel(f: string): string {

@@ -3,6 +3,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { setupDownloadHandlers } from './downloader'
 import { setupUpdater } from './updater'
+import { logError, getLocalLogPath } from './logger'
 import Store from 'electron-store'
 
 const store = new Store()
@@ -47,6 +48,14 @@ function createWindow(): void {
   mainWindow.on('maximize', () => mainWindow?.webContents.send('window-maximized', true))
   mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window-maximized', false))
 }
+
+// Yakalanmamış hatalar — crash koruması
+process.on('uncaughtException', (err) => {
+  logError({ errorType: 'crash', errorMessage: err.message, stackTrace: err.stack })
+})
+process.on('unhandledRejection', (reason) => {
+  logError({ errorType: 'crash', errorMessage: String(reason) })
+})
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.dropmedia.app')
@@ -105,4 +114,5 @@ function setupSettingsHandlers(ipcMain: Electron.IpcMain, store: Store): void {
   })
 
   ipcMain.handle('app-version', () => app.getVersion())
+  ipcMain.handle('get-log-path', () => getLocalLogPath())
 }
