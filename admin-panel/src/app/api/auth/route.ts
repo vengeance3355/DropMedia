@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { authenticate, SESSION_TOKEN } from '@/lib/auth'
 

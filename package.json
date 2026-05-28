@@ -11,7 +11,10 @@
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder",
     "dist:linux": "npm run build && electron-builder --linux",
-    "dist:win": "npm run build && electron-builder --win"
+    "dist:win": "npm run build && electron-builder --win",
+    "release": "node scripts/release.js",
+    "release:minor": "node scripts/release.js minor",
+    "release:major": "node scripts/release.js major"
   },
   "dependencies": {
     "electron-store": "^8.2.0",
@@ -24,6 +27,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "dotenv": "^17.4.2",
     "electron": "^33.3.1",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
@@ -46,12 +50,17 @@
       "repo": "dropmedia"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "resources/icon.png",
       "category": "Network"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "resources/icon.ico"
     },
     "nsis": {

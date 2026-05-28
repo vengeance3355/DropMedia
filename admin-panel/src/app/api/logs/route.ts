@@ -1,6 +1,7 @@
+export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { isAuthenticated } from '@/lib/auth'
-import { supabase } from '@/lib/supabase'
+import { getSupabase } from "@/lib/supabase"
 
 export async function GET(req: NextRequest) {
   if (!await isAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -10,8 +11,9 @@ export async function GET(req: NextRequest) {
   const errorType = searchParams.get('type')
   const page      = parseInt(searchParams.get('page') ?? '1')
   const limit     = 50
+  const sb        = getSupabase()
 
-  let query = supabase
+  let query = sb
     .from('error_logs')
     .select('*', { count: 'exact' })
     .order('created_at', { ascending: false })

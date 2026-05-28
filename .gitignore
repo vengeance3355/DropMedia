@@ -5,3 +5,5 @@ release
 out
 .env
 *.log
+admin-panel/node_modules
+admin-panel/.next
