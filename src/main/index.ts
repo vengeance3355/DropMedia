@@ -1,10 +1,16 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, globalShortcut, clipboard } from 'electron'
 import { join } from 'path'
+import { existsSync, appendFileSync } from 'fs'
+
+function dbgSettings(msg: string) {
+  try { appendFileSync('/tmp/dropmedia_settings.log', `[${new Date().toISOString()}] ${msg}\n`) } catch { /* ignore */ }
+}
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { setupDownloadHandlers } from './downloader'
 import { setupUpdater } from './updater'
 import { setupInstallerHandlers } from './installer'
-import { logError, getLocalLogPath } from './logger'
+import { flushPendingRemoteLogs, logActivity, logError, getLocalLogPath } from './logger'
+import { startAdminBridge } from './adminBridge'
 import Store from 'electron-store'
 
 const store = new Store()
@@ -128,17 +134,46 @@ function setupTray(): void {
 let clipboardInterval: ReturnType<typeof setInterval> | null = null
 let lastClipboard = ''
 
+function isHttpUrl(text: string): boolean {
+  try {
+    const u = new URL(text)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function sendClipboardUrl(text: string): void {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+  mainWindow.webContents.send('clipboard-url', text)
+}
+
 function startClipboardWatch(): void {
   if (clipboardInterval) return
-  lastClipboard = clipboard.readText()
+  try {
+    lastClipboard = clipboard.readText().trim()
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err))
+    logError({ errorType: 'clipboard', errorMessage: 'Clipboard okunamadı.', stackTrace: e.stack, operation: 'clipboard-watch-start' })
+    return
+  }
 
   clipboardInterval = setInterval(() => {
-    const text = clipboard.readText().trim()
-    if (text === lastClipboard) return
-    lastClipboard = text
+    try {
+      const text = clipboard.readText().trim()
+      if (text === lastClipboard) return
+      lastClipboard = text
 
-    if (/^https?:\/\/.+/.test(text)) {
-      mainWindow?.webContents.send('clipboard-url', text)
+      if (isHttpUrl(text)) {
+        sendClipboardUrl(text)
+      }
+    } catch (err) {
+      if (app.isQuiting) {
+        stopClipboardWatch()
+        return
+      }
+      const e = err instanceof Error ? err : new Error(String(err))
+      logError({ errorType: 'clipboard', errorMessage: 'Clipboard izleme sırasında pano okunamadı.', stackTrace: e.stack, operation: 'clipboard-watch-tick' })
     }
   }, 1000)
 }
@@ -156,13 +191,32 @@ function registerClipboardShortcut(shortcut: string): void {
 
   try {
     globalShortcut.register(shortcut, () => {
-      const text = clipboard.readText().trim()
-      if (/^https?:\/\/.+/.test(text)) {
-        mainWindow?.webContents.send('clipboard-url', text)
-        mainWindow?.show()
+      try {
+        const text = clipboard.readText().trim()
+        if (isHttpUrl(text)) {
+          if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+          mainWindow.webContents.send('clipboard-shortcut-url', text)
+        }
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err))
+        logError({
+          errorType: 'clipboard',
+          errorMessage: 'Clipboard kısayolu çalıştırılamadı.',
+          stackTrace: e.stack,
+          operation: 'clipboard-shortcut-run'
+        })
       }
     })
-  } catch { /* Geçersiz kısayol */ }
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err))
+    logError({
+      errorType: 'clipboard',
+      errorMessage: 'Clipboard kısayolu kaydedilemedi.',
+      stackTrace: e.stack,
+      operation: 'clipboard-shortcut-register',
+      details: { shortcut }
+    })
+  }
 }
 
 // ── Crash koruması ────────────────────────────────────────────────────────────
@@ -188,6 +242,11 @@ app.whenReady().then(() => {
   createWindow()
   setupTray()
   setupUpdater(mainWindow!)
+  startAdminBridge()
+  flushPendingRemoteLogs()
+  const remoteLogRetry = setInterval(() => flushPendingRemoteLogs(), 60_000)
+  remoteLogRetry.unref?.()
+  logActivity({ eventType: 'app_open', message: 'Uygulama açıldı', details: { windowCount: BrowserWindow.getAllWindows().length } })
 
   // Clipboard izlemeyi ayara göre başlat
   if (store.get('clipboardWatch')) startClipboardWatch()
@@ -200,7 +259,11 @@ app.whenReady().then(() => {
 })
 
 // Tray varsa pencere kapatınca çıkma — minimize et
-app.on('before-quit', () => { app.isQuiting = true })
+app.on('before-quit', () => {
+  app.isQuiting = true
+  stopClipboardWatch()
+  globalShortcut.unregisterAll()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -229,14 +292,48 @@ function setupWindowControls(): void {
   ipcMain.handle('open-mini-window',       () => createMiniWindow())
   ipcMain.handle('close-mini-window',      () => miniWindow?.close())
   ipcMain.handle('open-file-in-player',    (_e, path: string) => shell.openPath(path))
-  ipcMain.handle('start-file-drag',        (_e, filePath: string) => {
-    mainWindow?.webContents.startDrag({ file: filePath, icon: join(__dirname, '../../resources/icon.png') })
+  ipcMain.handle('start-file-drag',        async (_e, filePath: string) => {
+    try {
+      if (!filePath || !existsSync(filePath)) {
+        await logError({
+          errorType: 'general',
+          errorMessage: 'Sürüklenmek istenen dosya bulunamadı.',
+          operation: 'start-file-drag',
+          details: { filePath }
+        })
+        return { success: false, error: 'Dosya bulunamadı.' }
+      }
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+        return { success: false, error: 'Ana pencere hazır değil.' }
+      }
+
+      const iconPath = join(__dirname, '../../resources/icon.png')
+      const icon = existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty()
+      mainWindow.webContents.startDrag({ file: filePath, icon: icon.isEmpty() ? nativeImage.createEmpty() : icon })
+      return { success: true }
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err))
+      await logError({
+        errorType: 'general',
+        errorMessage: 'Dosya sürükleme başlatılamadı.',
+        stackTrace: e.stack,
+        operation: 'start-file-drag',
+        details: { filePath }
+      })
+      return { success: false, error: 'Dosya sürükleme başlatılamadı.' }
+    }
   })
 }
 
 function setupClipboardHandlers(ipcMain: Electron.IpcMain): void {
-  ipcMain.handle('clipboard-watch-start',  () => startClipboardWatch())
-  ipcMain.handle('clipboard-watch-stop',   () => stopClipboardWatch())
+  ipcMain.handle('clipboard-watch-start',  () => {
+    store.set('clipboardWatch', true)
+    startClipboardWatch()
+  })
+  ipcMain.handle('clipboard-watch-stop',   () => {
+    store.set('clipboardWatch', false)
+    stopClipboardWatch()
+  })
   ipcMain.handle('clipboard-shortcut-set', (_e, shortcut: string) => {
     store.set('clipboardShortcut', shortcut)
     registerClipboardShortcut(shortcut)
@@ -245,8 +342,28 @@ function setupClipboardHandlers(ipcMain: Electron.IpcMain): void {
 
 function setupSettingsHandlers(ipcMain: Electron.IpcMain, store: Store): void {
   ipcMain.handle('settings-get',     (_e, key: string)           => store.get(key))
-  ipcMain.handle('settings-set',     (_e, key: string, val: unknown) => store.set(key, val))
-  ipcMain.handle('settings-get-all', ()                           => store.store)
+  ipcMain.handle('settings-set',     async (_e, key: string, val: unknown) => {
+    dbgSettings(`SET ${key}=${JSON.stringify(val)?.slice(0, 100)}`)
+    try {
+      store.set(key, val)
+      dbgSettings(`SET_OK ${key}`)
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err))
+      await logError({
+        errorType: 'settings',
+        errorMessage: 'Ayar kaydedilemedi.',
+        stackTrace: e.stack,
+        operation: 'settings-set',
+        details: { key }
+      })
+      throw new Error('Ayar kaydedilemedi.')
+    }
+  })
+  ipcMain.handle('settings-get-all', () => {
+    const s = store.store
+    dbgSettings(`GET_ALL → clipboardWatch=${s['clipboardWatch']} cookieBrowser=${s['cookieBrowser']}`)
+    return s
+  })
 
   ipcMain.handle('dialog-select-folder', async () => {
     const r = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] })
@@ -255,6 +372,8 @@ function setupSettingsHandlers(ipcMain: Electron.IpcMain, store: Store): void {
 
   ipcMain.handle('get-downloads-folder', () => app.getPath('downloads'))
   ipcMain.handle('open-folder',          (_e, p: string) => shell.openPath(p))
+  ipcMain.handle('show-item-in-folder',  (_e, p: string) => shell.showItemInFolder(p))
+  ipcMain.handle('open-url',             (_e, url: string) => shell.openExternal(url))
   ipcMain.handle('app-version',          () => app.getVersion())
   ipcMain.handle('get-log-path',         () => getLocalLogPath())
 }

@@ -5,3 +5,12 @@
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 999px; }
+
+@layer utilities {
+  .bg-white\/3 { background: rgba(255,255,255,0.03); }
+  .bg-white\/6 { background: rgba(255,255,255,0.06); }
+  .bg-white\/8 { background: rgba(255,255,255,0.08); }
+  .bg-white\/12 { background: rgba(255,255,255,0.12); }
+  .border-white\/8 { border-color: rgba(255,255,255,0.08); }
+  .hover\:bg-white\/3:hover { background: rgba(255,255,255,0.03); }
+}

@@ -1,4 +1,4 @@
-export type DownloadStatus = 'pending' | 'fetching' | 'downloading' | 'completed' | 'error' | 'cancelled'
+export type DownloadStatus = 'pending' | 'fetching' | 'downloading' | 'paused' | 'completed' | 'error' | 'cancelled'
 
 export interface VideoFormat {
   id: string
@@ -42,6 +42,15 @@ export interface AppSettings {
   autoUpdate: boolean
   showNotifications: boolean
   filenameTemplate: string
+  speedLimit?: number
+  completionSound?: boolean
+  closeToTray?: boolean
+  subtitles?: boolean
+  embedSubs?: boolean
+  profiles?: Record<string, string>
+  cookieBrowser?: string
+  torEnabled?: boolean
+  clipboardWatch?: boolean
 }
 
 export interface UpdateStatus {

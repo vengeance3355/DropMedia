@@ -5,19 +5,42 @@ interface Props { onClose: () => void }
 
 const DEFAULTS: AppSettings = {
   downloadDir: '', theme: 'dark', maxConcurrentDownloads: 3, language: 'tr',
-  ytDlpPath: '', autoUpdate: true, showNotifications: true, filenameTemplate: '%(title)s'
+  ytDlpPath: '', autoUpdate: true, showNotifications: true, filenameTemplate: '%(title)s',
+  speedLimit: 0, completionSound: false, closeToTray: false, subtitles: false,
+  embedSubs: false, profiles: {}, cookieBrowser: 'auto', torEnabled: false,
+  clipboardWatch: false
+}
+
+interface CookieSource {
+  id: string
+  label: string
+  browser: string
+  profile?: string
+  hasRelevantCookies: boolean
 }
 
 type Tab = 'genel' | 'indirme' | 'gizlilik' | 'sistem'
 
+const SETTINGS_CACHE_KEY = 'dropmedia.settings.cache'
+
+function loadCachedSettings(): AppSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_CACHE_KEY)
+    return raw ? { ...DEFAULTS, ...(JSON.parse(raw) as Partial<AppSettings>) } : DEFAULTS
+  } catch { return DEFAULTS }
+}
+
 export function Settings({ onClose }: Props) {
-  const [settings, setSettings]       = useState<AppSettings>(DEFAULTS)
+  const [settings, setSettings]       = useState<AppSettings>(loadCachedSettings)
   const [tab, setTab]                 = useState<Tab>('genel')
-  const [ytDlpVer, setYtDlpVer]       = useState<string | null>(null)
+  const [ytDlpVer, setYtDlpVer]       = useState<string | null | undefined>(undefined)
   const [ffmpegOk, setFfmpegOk]       = useState<boolean | null>(null)
   const [torOk, setTorOk]             = useState<boolean | null>(null)
   const [appVersion, setAppVersion]   = useState('')
   const [saved, setSaved]             = useState(false)
+  const [settingsError, setSettingsError] = useState('')
+  const [cookieSources, setCookieSources] = useState<CookieSource[]>([])
+  const [cookieLoading, setCookieLoading] = useState(true)
 
   // Installer progress
   const [ytdlpProgress, setYtdlpProgress] = useState<{ status?: string; percent?: number; version?: string; error?: string } | null>(null)
@@ -28,32 +51,78 @@ export function Settings({ onClose }: Props) {
   const [recordingKey, setRecordingKey]   = useState(false)
 
   useEffect(() => {
-    window.api.getSettings().then(s  => setSettings({ ...DEFAULTS, ...(s as Partial<AppSettings>) }))
-    window.api.checkYtDlp().then(setYtDlpVer)
-    window.api.checkFfmpeg().then(setFfmpegOk)
-    window.api.getAppVersion().then(setAppVersion)
-    window.api.getDownloadsFolder().then(f => setSettings(p => p.downloadDir ? p : { ...p, downloadDir: f }))
-    window.api.getSetting('clipboardShortcut').then(s => setShortcutInput((s as string) ?? 'Ctrl+Shift+V'))
+    let alive = true
 
-    // Tor kontrolü asenkron
-    setTimeout(async () => {
-      // Tor durumu için check-tor IPC (basit kontrol)
-      const s = await window.api.getSetting('torEnabled')
-      setTorOk(!!(s))
-    }, 100)
+    // Versiyon anında gelsin — yavaş binary check'leri beklemesin
+    window.api.getAppVersion().then(v => { if (alive) setAppVersion(v) })
+
+    async function load() {
+      const [stored, ytDlp, ffmpeg, downloadsFolder, shortcut] = await Promise.all([
+        window.api.getSettings(),
+        window.api.checkYtDlp(),
+        window.api.checkFfmpeg(),
+        window.api.getDownloadsFolder(),
+        window.api.getSetting('clipboardShortcut')
+      ])
+
+      if (!alive) return
+
+      const merged = { ...DEFAULTS, ...(stored as Partial<AppSettings>) }
+      const resolved = merged.downloadDir ? merged : { ...merged, downloadDir: downloadsFolder }
+      setSettings(resolved)
+      try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(resolved)) } catch { /* ignore */ }
+      setYtDlpVer(ytDlp)
+      setFfmpegOk(ffmpeg)
+      setShortcutInput((shortcut as string) ?? 'Ctrl+Shift+V')
+      setTorOk(!!merged.torEnabled)
+
+      setCookieLoading(true)
+      let sources = await window.api.detectCookieSources()
+      if (sources.length === 0) {
+        await new Promise(resolve => setTimeout(resolve, 750))
+        sources = await window.api.detectCookieSources()
+      }
+      if (!alive) return
+      setCookieSources(sources)
+      setCookieLoading(false)
+      if (merged.cookieBrowser && merged.cookieBrowser !== 'auto' && sources.length > 0) {
+        const selectedExists = sources.some(source =>
+          source.id === merged.cookieBrowser || source.browser === merged.cookieBrowser
+        )
+        if (!selectedExists) {
+          // Kayıtlı tarayıcı bulunamadı — sadece UI'ı sıfırla, store'a yazma
+          setSettings(prev => ({ ...prev, cookieBrowser: 'auto' }))
+        }
+      }
+    }
+
+    load().catch(() => {
+      setCookieLoading(false)
+      setSettingsError('Ayarlar yüklenemedi. Teknik detay admin loguna kaydedildi.')
+    })
 
     window.api.onYtDlpProgress(d => setYtdlpProgress(d as typeof ytdlpProgress))
     window.api.onFfmpegProgress(d => setFfmpegProgress(d as typeof ffmpegProgress))
+
+    return () => {
+      alive = false
+      window.api.offInstallerListeners()
+    }
   }, [])
 
   async function save() {
-    for (const [k, v] of Object.entries(settings)) await window.api.setSetting(k, v)
-    // Clipboard watch state
-    if ((settings as Record<string,unknown>)['clipboardWatch']) await window.api.startClipboardWatch()
-    else await window.api.stopClipboardWatch()
-    // Shortcut
-    await window.api.setClipboardShortcut(shortcutInput)
-    setSaved(true); setTimeout(() => setSaved(false), 2000)
+    try {
+      for (const [k, v] of Object.entries(settings)) await window.api.setSetting(k, v)
+      // Clipboard watch state
+      if (settings.clipboardWatch) await window.api.startClipboardWatch()
+      else await window.api.stopClipboardWatch()
+      // Shortcut
+      await window.api.setClipboardShortcut(shortcutInput)
+      setSettingsError('')
+      setSaved(true); setTimeout(() => setSaved(false), 2000)
+    } catch {
+      setSettingsError('Ayarlar kaydedilemedi. Teknik detay admin loguna kaydedildi.')
+    }
   }
 
   async function handleUpdateYtDlp() {
@@ -72,24 +141,62 @@ export function Settings({ onClose }: Props) {
 
   function handleKeyCapture(e: React.KeyboardEvent) {
     e.preventDefault()
+    const key = e.key.length === 1 ? e.key.toUpperCase() : e.key
+    // Sadece modifier tuşuna basılıyorsa bekle — gerçek tuş gelince kaydet
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(key)) return
     const parts: string[] = []
     if (e.ctrlKey)  parts.push('Ctrl')
     if (e.shiftKey) parts.push('Shift')
     if (e.altKey)   parts.push('Alt')
-    const key = e.key.length === 1 ? e.key.toUpperCase() : e.key
-    if (!['Control','Shift','Alt','Meta'].includes(key)) parts.push(key)
-    if (parts.length > 1) { setShortcutInput(parts.join('+')); setRecordingKey(false) }
+    parts.push(key)
+    if (parts.length > 1) {
+      const combo = parts.join('+')
+      setShortcutInput(combo)
+      setRecordingKey(false)
+      window.api.setClipboardShortcut(combo).catch(() => {})
+    }
   }
 
   function set<K extends keyof AppSettings>(k: K, v: AppSettings[K]) {
-    setSettings(s => ({ ...s, [k]: v }))
+    setSettingsError('')
+    setSettings(s => {
+      const next = { ...s, [k]: v }
+      try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(next)) } catch { /* ignore */ }
+      return next
+    })
+    window.api.setSetting(String(k), v).catch(() => {
+      setSettingsError('Ayar kaydedilemedi. Teknik detay admin loguna kaydedildi.')
+    })
   }
 
-  const s = settings as Record<string, unknown>
+  function toggleClipboardWatch(v: boolean) {
+    set('clipboardWatch', v)
+    const action = v ? window.api.startClipboardWatch() : window.api.stopClipboardWatch()
+    action.catch(() => setSettingsError('Clipboard izleme başlatılamadı. Teknik detay admin loguna kaydedildi.'))
+  }
+
+  async function setCookieBrowser(browser: string) {
+    set('cookieBrowser', browser)
+    if (browser === 'auto') {
+      setCookieLoading(true)
+      try {
+        const sources = await window.api.detectCookieSources()
+        setCookieSources(sources)
+      } finally {
+        setCookieLoading(false)
+      }
+    }
+  }
+
+  function setProfile(site: string, format: string) {
+    set('profiles', { ...(settings.profiles ?? {}), [site]: format })
+  }
+
+  const speedLimit = settings.speedLimit ?? 0
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
 
       <div className="relative w-full max-w-xl rounded-3xl bg-[#100c20] border border-white/10 shadow-2xl overflow-hidden animate-slide-up flex flex-col max-h-[85vh]">
         {/* Başlık */}
@@ -153,11 +260,11 @@ export function Settings({ onClose }: Props) {
             <Section title="Hız Limiti (MB/s)" description="0 = sınırsız">
               <div className="flex items-center gap-3">
                 <input type="range" min="0" max="50" step="1"
-                  value={(s['speedLimit'] as number) ?? 0}
-                  onChange={e => window.api.setSetting('speedLimit', parseInt(e.target.value))}
+                  value={speedLimit}
+                  onChange={e => set('speedLimit', parseInt(e.target.value, 10))}
                   className="flex-1 accent-purple-500" />
                 <span className="text-white/60 text-sm w-16 text-right">
-                  {(s['speedLimit'] as number) ?? 0 === 0 ? 'Sınırsız' : `${s['speedLimit']} MB/s`}
+                  {speedLimit === 0 ? 'Sınırsız' : `${speedLimit} MB/s`}
                 </span>
               </div>
             </Section>
@@ -166,8 +273,8 @@ export function Settings({ onClose }: Props) {
               <div className="space-y-3">
                 <Toggle label="Otomatik güncelleme" checked={settings.autoUpdate} onChange={v => set('autoUpdate', v)} />
                 <Toggle label="Bildirim göster" checked={settings.showNotifications} onChange={v => set('showNotifications', v)} />
-                <Toggle label="İndirme tamamlanınca ses" checked={!!(s['completionSound'])} onChange={v => window.api.setSetting('completionSound', v)} />
-                <Toggle label="Kapatınca tray'e küçült" checked={!!(s['closeToTray'])} onChange={v => window.api.setSetting('closeToTray', v)} />
+                <Toggle label="İndirme tamamlanınca ses" checked={!!settings.completionSound} onChange={v => set('completionSound', v)} />
+                <Toggle label="Kapatınca tray'e küçült" checked={!!settings.closeToTray} onChange={v => set('closeToTray', v)} />
               </div>
             </Section>
           </>}
@@ -175,8 +282,8 @@ export function Settings({ onClose }: Props) {
           {tab === 'indirme' && <>
             <Section title="Altyazı">
               <div className="space-y-3">
-                <Toggle label="Altyazı indir (TR/EN)" checked={!!(s['subtitles'])} onChange={v => window.api.setSetting('subtitles', v)} />
-                <Toggle label="Altyazıyı videoya göm (ffmpeg gerekli)" checked={!!(s['embedSubs'])} onChange={v => window.api.setSetting('embedSubs', v)} />
+                <Toggle label="Altyazı indir (TR/EN)" checked={!!settings.subtitles} onChange={v => set('subtitles', v)} />
+                <Toggle label="Altyazıyı videoya göm (ffmpeg gerekli)" checked={!!settings.embedSubs} onChange={v => set('embedSubs', v)} />
               </div>
             </Section>
 
@@ -201,11 +308,8 @@ export function Settings({ onClose }: Props) {
                   <div key={site} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
                     <span className="text-white/60 text-sm capitalize">{site}</span>
                     <select
-                      value={((s['profiles'] as Record<string,string>)?.[site]) ?? 'best'}
-                      onChange={e => {
-                        const profiles = { ...((s['profiles'] as Record<string,string>) ?? {}), [site]: e.target.value }
-                        window.api.setSetting('profiles', profiles)
-                      }}
+                      value={settings.profiles?.[site] ?? 'best'}
+                      onChange={e => setProfile(site, e.target.value)}
                       className="bg-white/8 border border-white/10 rounded-lg px-2 py-1 text-white/70 text-xs outline-none">
                       {['best','1080p','720p','480p','360p','mp3','m4a'].map(f => (
                         <option key={f} value={f}>{f}</option>
@@ -219,24 +323,45 @@ export function Settings({ onClose }: Props) {
 
           {tab === 'gizlilik' && <>
             <Section title="Cookie (Giriş Gerektiren Videolar)" description="Tarayıcı cookie'lerini otomatik kullan">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <p className="text-white/35 text-xs">
+                  {cookieLoading ? 'Cookie profilleri aranıyor…' : cookieSources.length > 0 ? `${cookieSources.length} profil bulundu` : 'Profil bulunamadı'}
+                </p>
+                <button
+                  onClick={() => setCookieBrowser(settings.cookieBrowser ?? 'auto')}
+                  className="px-2.5 py-1 rounded-lg bg-white/8 hover:bg-white/12 text-white/50 hover:text-white text-xs transition-colors"
+                >
+                  Yenile
+                </button>
+              </div>
               <div className="flex flex-wrap gap-2">
-                {['devre dışı','chrome','firefox','brave','edge','chromium'].map(b => (
-                  <button key={b} onClick={() => window.api.setSetting('cookieBrowser', b === 'devre dışı' ? '' : b)}
+                {[
+                  { id: 'auto', label: cookieSources[0]?.label ? `Otomatik: ${cookieSources[0].label}` : 'Otomatik' },
+                  { id: '', label: 'Devre dışı' },
+                  ...cookieSources.map(source => ({
+                    id: source.id,
+                    label: source.hasRelevantCookies ? `${source.label} ✓` : source.label
+                  }))
+                ].map(b => (
+                  <button key={b.id || 'disabled'} onClick={() => setCookieBrowser(b.id)}
                     className={`px-3 py-1.5 rounded-xl text-xs font-medium capitalize transition-all
-                      ${(s['cookieBrowser'] || 'devre dışı') === b ? 'bg-gradient-button text-white' : 'bg-white/8 text-white/50 hover:bg-white/12 hover:text-white'}`}>
-                    {b}
+                      ${(settings.cookieBrowser ?? 'auto') === b.id ? 'bg-gradient-button text-white' : 'bg-white/8 text-white/50 hover:bg-white/12 hover:text-white'}`}>
+                    {b.label}
                   </button>
                 ))}
               </div>
+              {!cookieLoading && cookieSources.length === 0 && (
+                <p className="text-amber-400/80 text-xs mt-2">Tarayıcı cookie profili bulunamadı.</p>
+              )}
             </Section>
 
             <Section title="Tor Proxy" description="İndirmeleri Tor ağı üzerinden yönlendir">
               <div className="flex items-center gap-3">
                 <div className={`flex items-center gap-2 text-sm ${torOk ? 'text-green-400' : 'text-white/40'}`}>
                   <span className={`w-2 h-2 rounded-full ${torOk ? 'bg-green-400 animate-pulse' : 'bg-white/20'}`} />
-                  {torOk === null ? 'Kontrol ediliyor…' : torOk ? 'Tor çalışıyor' : 'Tor çalışmıyor'}
+                  {torOk === null ? 'Kontrol ediliyor…' : torOk ? 'Tor indir açık' : 'Tor indir kapalı'}
                 </div>
-                <Toggle label="Tor üzerinden indir" checked={!!(s['torEnabled'])} onChange={v => { window.api.setSetting('torEnabled', v); setTorOk(v) }} />
+                <Toggle label="Tor üzerinden indir" checked={!!settings.torEnabled} onChange={v => { set('torEnabled', v); setTorOk(v) }} />
               </div>
               {!torOk && (
                 <p className="text-white/30 text-xs mt-2">
@@ -245,36 +370,38 @@ export function Settings({ onClose }: Props) {
               )}
             </Section>
 
-            <Section title="Clipboard İzleme">
-              <div className="space-y-3">
-                <Toggle label="URL kopyalanınca otomatik algıla" checked={!!(s['clipboardWatch'])} onChange={v => { window.api.setSetting('clipboardWatch', v); v ? window.api.startClipboardWatch() : window.api.stopClipboardWatch() }} />
-                <div className="flex items-center gap-2">
-                  <span className="text-white/60 text-sm">Kısayol:</span>
-                  <div
-                    onClick={() => setRecordingKey(true)}
-                    onKeyDown={recordingKey ? handleKeyCapture : undefined}
-                    tabIndex={0}
-                    className={`flex-1 px-3 py-2 rounded-xl text-sm cursor-pointer outline-none transition-all
-                      ${recordingKey ? 'bg-purple-500/20 border border-purple-500/50 text-purple-300' : 'bg-white/8 border border-white/10 text-white/60'}`}>
-                    {recordingKey ? 'Tuş kombinasyonuna basın…' : (shortcutInput || 'Kısayol seç')}
-                  </div>
-                  {shortcutInput && <button onClick={() => { setShortcutInput(''); window.api.setClipboardShortcut('') }}
-                    className="text-white/30 hover:text-white/60 text-xs">Sil</button>}
+            <Section title="Clipboard İzleme" description="URL kopyaladığında otomatik algılar ve indirme kutusuna doldurur">
+              <Toggle label="Clipboard izlemeyi etkinleştir" checked={!!settings.clipboardWatch} onChange={toggleClipboardWatch} />
+            </Section>
+
+            <Section title="Direkt İndirme Kısayolu" description="Kısayola basınca clipboard'daki URL pencere açılmadan arka planda indirilir">
+              <div className="flex items-center gap-2">
+                <div
+                  onClick={() => setRecordingKey(true)}
+                  onKeyDown={recordingKey ? handleKeyCapture : undefined}
+                  tabIndex={0}
+                  className={`flex-1 px-3 py-2 rounded-xl text-sm cursor-pointer outline-none transition-all
+                    ${recordingKey ? 'bg-purple-500/20 border border-purple-500/50 text-purple-300' : 'bg-white/8 border border-white/10 text-white/60'}`}>
+                  {recordingKey ? 'Modifier + tuş kombinasyonuna basın…' : (shortcutInput || 'Kısayol belirle')}
                 </div>
+                {shortcutInput && (
+                  <button onClick={() => { setShortcutInput(''); window.api.setClipboardShortcut('') }}
+                    className="text-white/30 hover:text-white/60 text-xs">Sil</button>
+                )}
               </div>
             </Section>
           </>}
 
           {tab === 'sistem' && <>
             {/* ffmpeg */}
-            <Section title="ffmpeg" description={ffmpegOk ? 'Kurulu — yüksek kalite aktif' : 'Kurulu değil — bazı formatlar kısıtlı'}>
+            <Section title="ffmpeg" description={ffmpegOk === null ? 'Kontrol ediliyor…' : ffmpegOk ? 'Kurulu — yüksek kalite aktif' : 'Kurulu değil — bazı formatlar kısıtlı'}>
               <div className="flex items-center gap-3 mb-2">
                 <span className={`w-2 h-2 rounded-full ${ffmpegOk ? 'bg-green-400' : 'bg-amber-400'}`} />
                 <span className={`text-sm ${ffmpegOk ? 'text-green-400' : 'text-amber-400'}`}>
-                  {ffmpegOk ? 'ffmpeg kurulu' : 'ffmpeg kurulu değil'}
+                  {ffmpegOk === null ? 'ffmpeg kontrol ediliyor…' : ffmpegOk ? 'ffmpeg kurulu' : 'ffmpeg kurulu değil'}
                 </span>
               </div>
-              {!ffmpegOk && (
+              {ffmpegOk === false && (
                 <button onClick={handleInstallFfmpeg} disabled={ffmpegProgress?.status === 'downloading'}
                   className="px-4 py-2 rounded-xl bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 text-sm transition-all disabled:opacity-50">
                   Otomatik Kur
@@ -287,7 +414,7 @@ export function Settings({ onClose }: Props) {
             </Section>
 
             {/* yt-dlp */}
-            <Section title="yt-dlp" description={ytDlpVer ? `Sürüm: ${ytDlpVer}` : 'Bulunamadı'}>
+            <Section title="yt-dlp" description={ytDlpVer === undefined ? 'Kontrol ediliyor…' : ytDlpVer ? `Sürüm: ${ytDlpVer}` : 'Bulunamadı'}>
               <button onClick={handleUpdateYtDlp} disabled={ytdlpProgress?.status === 'downloading'}
                 className="px-4 py-2 rounded-xl bg-white/8 hover:bg-white/12 text-white/70 hover:text-white text-sm transition-all disabled:opacity-50">
                 {ytdlpProgress?.status === 'downloading' ? 'İndiriliyor…' : 'Güncelle'}
@@ -296,7 +423,7 @@ export function Settings({ onClose }: Props) {
                 <ProgressBar status={ytdlpProgress.status ?? ''} percent={ytdlpProgress.percent} error={ytdlpProgress.error}
                   doneLabel={`yt-dlp güncellendi → ${ytdlpProgress.version} ✓`} />
               )}
-              {!ytDlpVer && (
+              {ytDlpVer === null && (
                 <p className="text-red-400/80 text-xs mt-2">
                   yt-dlp bulunamadı — "Güncelle" ile otomatik kur
                 </p>
@@ -314,12 +441,15 @@ export function Settings({ onClose }: Props) {
         </div>
 
         {/* Kaydet */}
-        <div className="px-6 py-4 border-t border-white/8 flex justify-end gap-2 shrink-0">
+        <div className="px-6 py-4 border-t border-white/8 flex items-center justify-between gap-3 shrink-0">
+          <p className="min-h-4 text-red-400/80 text-xs">{settingsError}</p>
+          <div className="flex justify-end gap-2 shrink-0">
           <button onClick={onClose} className="px-4 py-2 rounded-xl bg-white/6 hover:bg-white/10 text-white/60 text-sm font-medium transition-all">İptal</button>
           <button onClick={save}
             className="px-5 py-2 rounded-xl bg-gradient-button text-white text-sm font-semibold hover:opacity-90 transition-all shadow-lg shadow-purple-500/20 flex items-center gap-2">
             {saved ? <><CheckIcon />Kaydedildi</> : 'Kaydet'}
           </button>
+          </div>
         </div>
       </div>
     </div>
@@ -342,19 +472,30 @@ function Section({ title, description, children }: { title: string; description?
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label className="flex items-center justify-between cursor-pointer group">
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      aria-pressed={checked}
+      className="w-full flex items-center justify-between cursor-pointer group text-left"
+    >
       <span className="text-white/60 text-sm group-hover:text-white/80 transition-colors">{label}</span>
-      <div onClick={() => onChange(!checked)} style={{ width: 40, height: 22 }}
-        className={`relative rounded-full cursor-pointer transition-all duration-200 ${checked ? 'bg-gradient-button' : 'bg-white/15'}`}>
-        <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200 ${checked ? 'left-5' : 'left-0.5'}`} />
-      </div>
-    </label>
+      <span
+        style={{ width: 40, height: 22 }}
+        className={`relative shrink-0 rounded-full transition-colors duration-200 ${checked ? 'bg-gradient-button' : 'bg-white/15'}`}
+      >
+        <span
+          className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"
+          style={{ transform: checked ? 'translateX(18px)' : 'translateX(0)' }}
+        />
+      </span>
+    </button>
   )
 }
 
 function ProgressBar({ status, percent, error, doneLabel }: { status: string; percent?: number; error?: string; doneLabel: string }) {
   if (status === 'done')  return <p className="text-green-400 text-xs mt-2">{doneLabel}</p>
   if (status === 'error') return <p className="text-red-400 text-xs mt-2">Hata: {error}</p>
+  if (status === 'system-install') return <p className="text-blue-400 text-xs mt-2">Paket yöneticisiyle kuruluyor… Yetki penceresi açılabilir.</p>
   if (status === 'extracting') return <p className="text-blue-400 text-xs mt-2">Çıkartılıyor…</p>
   return (
     <div className="mt-2 space-y-1">

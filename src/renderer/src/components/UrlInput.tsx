@@ -3,11 +3,13 @@ import { VideoInfo, VideoFormat } from '../types'
 import { detectPlatform, formatDuration } from '../utils/platform'
 
 interface Props {
-  onDownload: (url: string, format: string, videoInfo: VideoInfo) => void
+  onDownload: (url: string, format: string, videoInfo: VideoInfo) => Promise<boolean>
   disabled?: boolean
+  incomingUrl?: { id: string; url: string } | null
+  onIncomingUrlHandled?: () => void
 }
 
-export function UrlInput({ onDownload, disabled }: Props) {
+export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandled }: Props) {
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null)
@@ -36,7 +38,7 @@ export function UrlInput({ onDownload, disabled }: Props) {
       const defaultFmt = info.formats.find(f => f.id === 'best') || info.formats[0]
       setSelectedFormat(defaultFmt?.id || '')
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Video bilgisi alınamadı')
+      setError(cleanError(e))
     } finally {
       setLoading(false)
     }
@@ -49,13 +51,28 @@ export function UrlInput({ onDownload, disabled }: Props) {
     setError('')
   }
 
-  function handleDownload() {
+  async function handleDownload() {
     if (!videoInfo || !selectedFormat) return
-    onDownload(url, selectedFormat, videoInfo)
+    const started = await onDownload(url, selectedFormat, videoInfo)
+    if (!started) {
+      setError('Bu video aynı kalitede zaten kuyruğa eklendi veya başlatılamadı.')
+      return
+    }
     setUrl('')
     setVideoInfo(null)
     setSelectedFormat('')
   }
+
+  useEffect(() => {
+    if (!incomingUrl) return
+
+    setUrl(incomingUrl.url)
+    setVideoInfo(null)
+    setSelectedFormat('')
+    setError('')
+    inputRef.current?.focus()
+    onIncomingUrlHandled?.()
+  }, [incomingUrl?.id])
 
   useEffect(() => {
     if (url && !videoInfo && !loading) {
@@ -273,4 +290,14 @@ function LoadingSpinner() {
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
     </svg>
   )
+}
+
+function cleanError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e || '')
+  const cleaned = raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    .trim()
+
+  return cleaned || 'Video bilgisi alınamadı'
 }

@@ -1,7 +1,7 @@
 -- DropMedia Supabase Schema
 -- Çalıştır: Supabase Dashboard → SQL Editor → New Query → yapıştır → Run
 
--- Hata logları tablosu
+-- Hata/olay logları tablosu
 CREATE TABLE IF NOT EXISTS error_logs (
   id            UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   created_at    TIMESTAMPTZ DEFAULT NOW(),
@@ -11,9 +11,9 @@ CREATE TABLE IF NOT EXISTS error_logs (
   os            TEXT,
   url           TEXT,                   -- İndirilen video URL'si
   format        TEXT,                   -- Seçilen format
-  error_type    TEXT,                   -- 'download' | 'fetch' | 'update' | 'crash'
+  error_type    TEXT,                   -- 'download' | 'fetch' | 'update' | 'crash' | 'app_open' | 'settings' | 'clipboard'
   error_message TEXT,
-  stack_trace   TEXT,
+  stack_trace   TEXT,                   -- Teknik detaylar: oturum, işlem, komut, stderr/stdout; gizli değerler redakte edilmeli
   ytdlp_version TEXT,
   ffmpeg        BOOLEAN,
   tor_enabled   BOOLEAN
