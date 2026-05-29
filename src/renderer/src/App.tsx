@@ -3,19 +3,20 @@ import { useTheme } from './hooks/useTheme'
 import { TitleBar } from './components/TitleBar'
 import { UrlInput } from './components/UrlInput'
 import { DownloadQueue } from './components/DownloadQueue'
+import { ConverterTab } from './components/ConverterTab'
 import { Settings } from './components/Settings'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useDownloadStore } from './store/downloadStore'
 import { DownloadItem, VideoInfo } from './types'
 import { detectPlatform } from './utils/platform'
 
-type Tab = 'queue' | 'history' | 'stats'
+type Tab = 'queue' | 'history' | 'convert' | 'stats'
 
 // Tamamlanma sesi (kısa bip — base64 data URL)
 const COMPLETION_BEEP = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
 
 export default function App() {
-  const { items, addItem, updateStatus, updateProgress, removeItem, clearCompleted } = useDownloadStore()
+  const { items, addItem, updateStatus, updateProgress, updateLog, removeItem, clearCompleted } = useDownloadStore()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activeTab, setActiveTab]       = useState<Tab>('queue')
   const [downloadDir, setDownloadDir]   = useState('')
@@ -84,6 +85,11 @@ export default function App() {
     window.api.onDownloadPaused(data => {
       const d = data as { id: string }
       updateStatus(d.id, 'paused', { speed: '', eta: '' })
+    })
+
+    window.api.onDownloadLog(data => {
+      const d = data as { id: string; msg: string }
+      updateLog(d.id, d.msg)
     })
 
     // Clipboard URL algılama
@@ -350,6 +356,9 @@ export default function App() {
           <TabBtn active={activeTab === 'history'} onClick={() => setActiveTab('history')}>
             Geçmiş{historyItems.length > 0 && <Badge muted>{historyItems.length}</Badge>}
           </TabBtn>
+          <TabBtn active={activeTab === 'convert'} onClick={() => setActiveTab('convert')}>
+            Dönüştür
+          </TabBtn>
           <TabBtn active={activeTab === 'stats'} onClick={() => setActiveTab('stats')}>
             İstatistik
           </TabBtn>
@@ -377,6 +386,7 @@ export default function App() {
           {activeTab === 'history' && (
             <DownloadQueue items={historyItems} onCancel={handleCancel} onPause={handlePause} onResume={handleResume} onRedownload={handleRedownload} onRemove={removeItem} onClearCompleted={clearCompleted} onShowItemInFolder={handleShowItemInFolder} onConvertDone={handleConvertDone} onUrlDrop={handleDetectedUrl} />
           )}
+          {activeTab === 'convert' && <ConverterTab completedItems={historyItems} />}
           {activeTab === 'stats' && <StatsView stats={stats} />}
         </div>
 

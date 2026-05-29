@@ -431,7 +431,7 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
       getMainWindow()?.webContents.send('download-log', { id, msg })
     }
   })
-  proc.on('close', (code) => {
+  proc.on('close', async (code) => {
     dbg(`CLOSE id=${id} code=${code} success=${code === 0}`)
     activeDownloads.delete(id)
     activeDownloadKeys.delete(key)

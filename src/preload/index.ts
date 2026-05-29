@@ -37,6 +37,7 @@ const api = {
     ipcRenderer.removeAllListeners('download-complete')
     ipcRenderer.removeAllListeners('download-paused')
     ipcRenderer.removeAllListeners('download-log')
+    ipcRenderer.removeAllListeners('convert-progress')
   },
   offInstallerListeners: () => {
     ipcRenderer.removeAllListeners('ytdlp-update-progress')
@@ -61,6 +62,7 @@ const api = {
 
   // Sistem
   selectFolder:       () => ipcRenderer.invoke('dialog-select-folder'),
+  selectFile:         (filters?: { name: string; extensions: string[] }[]) => ipcRenderer.invoke('dialog-select-file', filters),
   getDownloadsFolder: () => ipcRenderer.invoke('get-downloads-folder'),
   openFolder:         (p: string) => ipcRenderer.invoke('open-folder', p),
   showItemInFolder:   (p: string) => ipcRenderer.invoke('show-item-in-folder', p),

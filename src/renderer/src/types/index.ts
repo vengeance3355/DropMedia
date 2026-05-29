@@ -31,6 +31,7 @@ export interface DownloadItem {
   completedAt?: number
   outputDir?: string
   outputPath?: string
+  downloadLog?: string
 }
 
 export interface AppSettings {

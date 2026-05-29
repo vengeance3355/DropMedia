@@ -370,6 +370,14 @@ function setupSettingsHandlers(ipcMain: Electron.IpcMain, store: Store): void {
     return r.canceled ? null : r.filePaths[0]
   })
 
+  ipcMain.handle('dialog-select-file', async (_e, filters?: { name: string; extensions: string[] }[]) => {
+    const r = await dialog.showOpenDialog(mainWindow!, {
+      properties: ['openFile'],
+      filters: filters ?? [{ name: 'Medya Dosyaları', extensions: ['mp4','mkv','webm','mov','avi','mp3','m4a','flac','wav','ogg'] }]
+    })
+    return r.canceled ? null : r.filePaths[0]
+  })
+
   ipcMain.handle('get-downloads-folder', () => app.getPath('downloads'))
   ipcMain.handle('open-folder',          (_e, p: string) => shell.openPath(p))
   ipcMain.handle('show-item-in-folder',  (_e, p: string) => shell.showItemInFolder(p))

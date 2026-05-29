@@ -52,6 +52,7 @@ declare global {
 
       // Sistem
       selectFolder:       () => Promise<string | null>
+      selectFile:         (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
       getDownloadsFolder: () => Promise<string>
       openFolder:         (path: string) => Promise<void>
       showItemInFolder:   (path: string) => Promise<void>

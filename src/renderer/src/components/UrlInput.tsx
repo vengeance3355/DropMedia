@@ -9,13 +9,28 @@ interface Props {
   onIncomingUrlHandled?: () => void
 }
 
+const FETCH_MSGS = [
+  'Sunucuya bağlanıyor…',
+  'Video bilgisi alınıyor…',
+  'Formatlar analiz ediliyor…',
+  'İçerik hazırlanıyor…',
+  'Metadata işleniyor…',
+]
+
 export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandled }: Props) {
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null)
   const [selectedFormat, setSelectedFormat] = useState('')
   const [error, setError] = useState('')
+  const [fetchMsgIdx, setFetchMsgIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!loading) return
+    const t = setInterval(() => setFetchMsgIdx(i => (i + 1) % FETCH_MSGS.length), 1600)
+    return () => clearInterval(t)
+  }, [loading])
 
   const platform = url ? detectPlatform(url) : null
 
@@ -149,7 +164,8 @@ export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandl
               {loading ? (
                 <span className="flex items-center gap-1.5">
                   <LoadingSpinner />
-                  Analiz
+                  <span className="hidden sm:inline">{FETCH_MSGS[fetchMsgIdx].replace('…', '')}</span>
+                  <span className="sm:hidden">Analiz</span>
                 </span>
               ) : 'Analiz Et'}
             </button>

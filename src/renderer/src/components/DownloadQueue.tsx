@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { DownloadItem } from '../types'
 import { formatDuration } from '../utils/platform'
 
@@ -14,6 +14,14 @@ interface Props {
   onConvertDone?: (id: string, newPath: string) => void
   onUrlDrop?: (url: string) => void
 }
+
+const FETCH_MESSAGES = [
+  'Sunucuya bağlanıyor…',
+  'Video bilgisi alınıyor…',
+  'Formatlar analiz ediliyor…',
+  'İçerik hazırlanıyor…',
+  'Metadata işleniyor…',
+]
 
 export function DownloadQueue({ items, onCancel, onPause, onResume, onRedownload, onRemove, onClearCompleted, onShowItemInFolder, onConvertDone, onUrlDrop }: Props) {
   const hasCompleted = items.some(i => i.status === 'completed' || i.status === 'error')
@@ -70,10 +78,32 @@ function DownloadCard({ item, onCancel, onPause, onResume, onRedownload, onRemov
   onShowItemInFolder: (item: DownloadItem) => void
   onConvertDone?: (id: string, newPath: string) => void
 }) {
-  const { status, progress, speed, eta, totalSize, videoInfo, selectedFormat, error } = item
-  const [converting, setConverting] = useState(false)
+  const { status, progress, speed, eta, totalSize, videoInfo, selectedFormat, error, downloadLog } = item
+  const [converting, setConverting]     = useState(false)
   const [convertError, setConvertError] = useState('')
-  const [showConvert, setShowConvert] = useState(false)
+  const [showConvert, setShowConvert]   = useState(false)
+  const [showSource, setShowSource]     = useState(false)
+  const [urlCopied, setUrlCopied]       = useState(false)
+  const [fetchMsgIdx, setFetchMsgIdx]   = useState(0)
+  const sourceRef  = useRef<HTMLDivElement>(null)
+  const convertRef = useRef<HTMLDivElement>(null)
+
+  // Fetching sırasında dönen mesajlar
+  useEffect(() => {
+    if (status !== 'fetching') return
+    const t = setInterval(() => setFetchMsgIdx(i => (i + 1) % FETCH_MESSAGES.length), 1800)
+    return () => clearInterval(t)
+  }, [status])
+
+  // Popup dışı tıkla kapat
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (sourceRef.current && !sourceRef.current.contains(e.target as Node)) setShowSource(false)
+      if (convertRef.current && !convertRef.current.contains(e.target as Node)) setShowConvert(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   const statusConfig = {
     pending:     { color: 'text-white/40',   label: 'Bekliyor',        dot: 'bg-white/30' },
@@ -85,17 +115,24 @@ function DownloadCard({ item, onCancel, onPause, onResume, onRedownload, onRemov
     cancelled:   { color: 'text-white/30',   label: 'İptal edildi',    dot: 'bg-white/20' }
   }
 
-  const cfg = statusConfig[status]
+  const cfg      = statusConfig[status]
   const title    = videoInfo?.title || item.url
   const duration = videoInfo?.duration ? formatDuration(videoInfo.duration) : ''
 
-  // Dosyayı sürükle-bırak
   function handleDragStart(e: React.DragEvent) {
     e.stopPropagation()
     if (!item.outputPath) { e.preventDefault(); return }
     e.dataTransfer.effectAllowed = 'copy'
     e.dataTransfer.setData('text/plain', item.outputPath)
     window.api.startFileDrag(item.outputPath).catch(() => {})
+  }
+
+  function handleCopyUrl() {
+    navigator.clipboard.writeText(item.url).then(() => {
+      setUrlCopied(true)
+      setTimeout(() => setUrlCopied(false), 1500)
+    })
+    setShowSource(false)
   }
 
   async function handleConvert(toFormat: string) {
@@ -112,10 +149,27 @@ function DownloadCard({ item, onCancel, onPause, onResume, onRedownload, onRemov
     }
   }
 
+  // İndirme log mesajını temizle — kısa ve okunabilir hale getir
+  function cleanLog(raw: string): string {
+    return raw
+      .replace(/^\[download\]\s*/i, '')
+      .replace(/^\[ffmpeg\]\s*/i, '')
+      .replace(/^\[Merger\]\s*/i, 'Birleştiriliyor: ')
+      .replace(/^\[ExtractAudio\]\s*/i, 'Ses çıkarılıyor: ')
+      .replace(/^Deleting original file.*/, 'Geçici dosyalar temizleniyor…')
+      .replace(/^Destination:.*/, 'Hedef dosya hazırlanıyor…')
+      .trim()
+      .slice(0, 60)
+  }
+
+  const activityMsg = status === 'fetching'
+    ? FETCH_MESSAGES[fetchMsgIdx]
+    : (status === 'downloading' && downloadLog && !speed)
+      ? cleanLog(downloadLog)
+      : null
+
   return (
-    <div
-      className="group rounded-2xl bg-white/5 border border-white/8 hover:border-white/12 transition-all duration-200 animate-slide-up"
-    >
+    <div className="group rounded-2xl bg-white/5 border border-white/8 hover:border-white/12 transition-all duration-200 animate-slide-up">
       <div className="flex items-center gap-3 p-3.5">
         {/* Thumbnail */}
         <div className="relative shrink-0 w-14 h-10 rounded-xl overflow-hidden bg-white/5 cursor-pointer"
@@ -149,10 +203,16 @@ function DownloadCard({ item, onCancel, onPause, onResume, onRedownload, onRemov
           <p className="text-white/80 text-sm font-medium leading-tight truncate">{title}</p>
           {status === 'downloading' && (
             <div className="mt-1 flex items-center gap-2 text-xs text-white/30">
-              {speed && <span>{speed}</span>}
-              {eta && <span>• ETA {eta}</span>}
+              {speed  && <span>{speed}</span>}
+              {eta    && <span>• ETA {eta}</span>}
               {totalSize && <span>• {totalSize}</span>}
+              {activityMsg && !speed && (
+                <span className="text-blue-400/70 animate-pulse">{activityMsg}</span>
+              )}
             </div>
+          )}
+          {activityMsg && status === 'fetching' && (
+            <p className="mt-0.5 text-blue-400/60 text-xs animate-pulse">{activityMsg}</p>
           )}
           {status === 'error' && error && <p className="mt-1 text-red-400/70 text-xs truncate">{error}</p>}
           {convertError && <p className="mt-1 text-red-400/70 text-xs">{convertError}</p>}
@@ -162,23 +222,45 @@ function DownloadCard({ item, onCancel, onPause, onResume, onRedownload, onRemov
         <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
           {status === 'completed' && item.outputPath && (
             <>
-              {/* Kaynak URL */}
-              <ActionBtn onClick={() => window.api.openUrl(item.url)} title="Kaynağa git">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                  <polyline points="15 3 21 3 21 9"/>
-                  <line x1="10" y1="14" x2="21" y2="3"/>
-                </svg>
-              </ActionBtn>
-              {/* Sürükle ipucu */}
+              {/* Kaynak popup */}
+              <div className="relative" ref={sourceRef}>
+                <ActionBtn onClick={() => setShowSource(v => !v)} title="Kaynak">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                  </svg>
+                </ActionBtn>
+                {showSource && (
+                  <div className="absolute right-0 top-8 z-20 bg-[#1a1030] border border-white/10 rounded-xl p-2 min-w-[9rem] shadow-xl">
+                    <button onClick={handleCopyUrl}
+                      className="w-full text-left px-3 py-1.5 text-xs text-white/70 hover:text-white hover:bg-white/8 rounded-lg transition-colors flex items-center gap-2">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                      </svg>
+                      {urlCopied ? 'Kopyalandı!' : 'URL Kopyala'}
+                    </button>
+                    <button onClick={() => { window.api.openUrl(item.url); setShowSource(false) }}
+                      className="w-full text-left px-3 py-1.5 text-xs text-white/70 hover:text-white hover:bg-white/8 rounded-lg transition-colors flex items-center gap-2">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                        <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+                      </svg>
+                      Tarayıcıda Aç
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Sürükle */}
               <DragActionBtn onDragStart={handleDragStart} title="Sürükleyerek paylaş" className="cursor-grab">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                   <polyline points="14 2 14 8 20 8"/>
                 </svg>
               </DragActionBtn>
+
               {/* Dönüştür */}
-              <div className="relative">
+              <div className="relative" ref={convertRef}>
                 <ActionBtn onClick={() => setShowConvert(v => !v)} title="Dönüştür">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
@@ -243,8 +325,22 @@ function DownloadCard({ item, onCancel, onPause, onResume, onRedownload, onRemov
       {/* Progress bar */}
       {(status === 'downloading' || status === 'paused' || status === 'completed') && (
         <div className="h-0.5 bg-white/5 mx-3.5 mb-3 rounded-full overflow-hidden">
-          <div className="h-full bg-gradient-progress rounded-full transition-all duration-300"
-            style={{ width: `${status === 'completed' ? 100 : progress}%` }} />
+          <div
+            className={`h-full rounded-full transition-all duration-300 ${
+              status === 'downloading'
+                ? 'bg-gradient-progress'
+                : status === 'paused'
+                  ? 'bg-amber-400/60'
+                  : 'bg-gradient-progress'
+            }`}
+            style={{ width: `${status === 'completed' ? 100 : progress}%` }}
+          />
+        </div>
+      )}
+      {/* Fetching indeterminate bar */}
+      {status === 'fetching' && (
+        <div className="h-0.5 bg-white/5 mx-3.5 mb-3 rounded-full overflow-hidden">
+          <div className="h-full w-1/3 bg-blue-400/60 rounded-full animate-[slide-right_1.4s_ease-in-out_infinite]" />
         </div>
       )}
     </div>
@@ -266,13 +362,8 @@ function DragActionBtn({ onDragStart, children, title, className = '' }: {
   onDragStart: (e: React.DragEvent) => void; children: React.ReactNode; title: string; className?: string
 }) {
   return (
-    <button
-      draggable
-      onDragStart={onDragStart}
-      onClick={e => e.preventDefault()}
-      title={title}
-      className={`w-7 h-7 rounded-lg flex items-center justify-center text-white/40 hover:bg-white/8 transition-all ${className}`}
-    >
+    <button draggable onDragStart={onDragStart} onClick={e => e.preventDefault()} title={title}
+      className={`w-7 h-7 rounded-lg flex items-center justify-center text-white/40 hover:bg-white/8 transition-all ${className}`}>
       {children}
     </button>
   )
@@ -282,7 +373,5 @@ function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value.trim())
     return url.protocol === 'http:' || url.protocol === 'https:'
-  } catch {
-    return false
-  }
+  } catch { return false }
 }

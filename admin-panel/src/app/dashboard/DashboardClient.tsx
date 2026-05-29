@@ -140,6 +140,9 @@ export function DashboardClient() {
   const [logPage, setLogPage]     = useState(1)
   const [loading, setLoading]     = useState(true)
   const [bridgeState, setBridgeState] = useState<BridgeState>('checking')
+  const [logSearch, setLogSearch] = useState('')
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deletingAll, setDeletingAll] = useState(false)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -174,6 +177,40 @@ export function DashboardClient() {
   async function handleLogout() {
     await fetch('/api/auth', { method: 'DELETE' })
     window.location.href = '/'
+  }
+
+  async function handleDeleteLog(id: string) {
+    setDeletingId(id)
+    try {
+      await fetch(`/api/logs?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      setLogs(prev => prev.filter(l => l.id !== id))
+      setLogCount(c => Math.max(0, c - 1))
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  async function handleDeleteAll() {
+    if (!confirm('Tüm logları silmek istediğinizden emin misiniz?')) return
+    setDeletingAll(true)
+    try {
+      await fetch('/api/logs', { method: 'DELETE' })
+      setLogs([])
+      setLogCount(0)
+    } finally {
+      setDeletingAll(false)
+    }
+  }
+
+  function handleSaveLogs(logsToSave: LogItem[]) {
+    const text = logsToSave.map(formatLogForCopy).join('\n\n' + '─'.repeat(60) + '\n\n')
+    const blob = new Blob([text], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `dropmedia-logs-${new Date().toISOString().slice(0, 10)}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -246,7 +283,14 @@ export function DashboardClient() {
           ) : tab === 'overview' ? (
             <OverviewTab stats={stats} platformData={platformData} />
           ) : tab === 'logs' ? (
-            <LogsTab logs={logs} logCount={logCount} logPage={logPage} setLogPage={setLogPage} expandedLog={expandedLog} setExpandedLog={setExpandedLog} bridgeState={bridgeState} />
+            <LogsTab
+              logs={logs} logCount={logCount} logPage={logPage} setLogPage={setLogPage}
+              expandedLog={expandedLog} setExpandedLog={setExpandedLog} bridgeState={bridgeState}
+              search={logSearch} setSearch={setLogSearch}
+              deletingId={deletingId} deletingAll={deletingAll}
+              onDeleteLog={handleDeleteLog} onDeleteAll={handleDeleteAll}
+              onSaveLogs={handleSaveLogs}
+            />
           ) : (
             <StatsTab stats={stats} />
           )}
@@ -341,23 +385,89 @@ function CopyBtn({ text, small }: { text: string; small?: boolean }) {
   )
 }
 
-function LogsTab({ logs, logCount, logPage, setLogPage, expandedLog, setExpandedLog, bridgeState }: {
+function LogsTab({ logs, logCount, logPage, setLogPage, expandedLog, setExpandedLog, bridgeState,
+  search, setSearch, deletingId, deletingAll, onDeleteLog, onDeleteAll, onSaveLogs
+}: {
   logs: LogItem[]; logCount: number; logPage: number; setLogPage: (p: number) => void
   expandedLog: string | null; setExpandedLog: (id: string | null) => void
   bridgeState: BridgeState
+  search: string; setSearch: (s: string) => void
+  deletingId: string | null; deletingAll: boolean
+  onDeleteLog: (id: string) => void
+  onDeleteAll: () => void
+  onSaveLogs: (logs: LogItem[]) => void
 }) {
   const totalPages = Math.ceil(logCount / 50)
-  const allText = logs.map(formatLogForCopy).join('\n\n' + '─'.repeat(60) + '\n\n')
+
+  const filtered = search.trim()
+    ? logs.filter(l =>
+        [l.error_type, l.error_message, l.hostname, l.url, l.format, l.os]
+          .some(v => v?.toLowerCase().includes(search.toLowerCase()))
+      )
+    : logs
+
+  const allText = filtered.map(formatLogForCopy).join('\n\n' + '─'.repeat(60) + '\n\n')
 
   return (
-    <div className="space-y-2">
-      {logs.length > 0 && (
-        <div className="flex justify-end pb-1">
-          <CopyBtn text={allText} />
+    <div className="space-y-3">
+      {/* Araç çubuğu */}
+      <div className="flex items-center gap-2">
+        {/* Arama */}
+        <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-xl bg-white/5 border border-white/8 focus-within:border-white/16 transition-colors">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/30 shrink-0">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input
+            type="text" value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Ara: tip, mesaj, cihaz, URL…"
+            className="flex-1 bg-transparent text-sm text-white placeholder-white/30 outline-none min-w-0"
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="text-white/30 hover:text-white/60 transition-colors">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          )}
         </div>
+
+        {/* Araçlar */}
+        {filtered.length > 0 && (
+          <>
+            <CopyBtn text={allText} />
+            <button onClick={() => onSaveLogs(filtered)} title="Dosyaya kaydet"
+              className="px-3 py-1.5 rounded-lg bg-white/8 hover:bg-white/12 text-white/50 hover:text-white transition-colors text-xs flex items-center gap-1.5">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Kaydet
+            </button>
+          </>
+        )}
+        {logs.length > 0 && (
+          <button onClick={onDeleteAll} disabled={deletingAll} title="Tüm logları sil"
+            className="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400/70 hover:text-red-400 transition-colors text-xs disabled:opacity-40 flex items-center gap-1.5">
+            {deletingAll
+              ? <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+              : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
+            }
+            Tümünü Sil
+          </button>
+        )}
+      </div>
+
+      {/* Sonuç sayısı */}
+      {search && (
+        <p className="text-white/30 text-xs">{filtered.length} sonuç — "{search}"</p>
       )}
-      {logs.length === 0 && <EmptyState message={bridgeState === 'unavailable' ? 'Yerel uygulama bağlı değil; log alınamadı' : 'Henüz log yok'} />}
-      {logs.map(log => (
+
+      {filtered.length === 0 && (
+        <EmptyState message={
+          search ? `"${search}" için sonuç bulunamadı` :
+          bridgeState === 'unavailable' ? 'Yerel uygulama bağlı değil; log alınamadı' :
+          'Henüz log yok'
+        } />
+      )}
+
+      {filtered.map(log => (
         <div key={log.id} className="bg-white/5 border border-white/8 rounded-xl overflow-hidden">
           <div
             className="flex items-center gap-4 p-4 cursor-pointer hover:bg-white/3 transition-colors"
@@ -373,9 +483,22 @@ function LogsTab({ logs, logCount, logPage, setLogPage, expandedLog, setExpanded
               'bg-white/10 text-white/50'
             }`}>{log.error_type}</span>
             <span className="text-white/70 text-sm flex-1 truncate">{log.error_message}</span>
-            <span className="text-white/30 text-xs shrink-0">{log.hostname}</span>
+            <span className="text-white/30 text-xs shrink-0 hidden lg:block">{log.hostname}</span>
             <span className="text-white/30 text-xs shrink-0">{new Date(log.created_at).toLocaleString('tr')}</span>
-            <CopyBtn text={formatLogForCopy(log)} small />
+            <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+              <CopyBtn text={formatLogForCopy(log)} small />
+              <button
+                onClick={() => onDeleteLog(log.id)}
+                disabled={deletingId === log.id}
+                title="Bu logu sil"
+                className="px-2 py-1 rounded-lg bg-white/5 hover:bg-red-500/15 text-white/20 hover:text-red-400 transition-colors text-xs disabled:opacity-40"
+              >
+                {deletingId === log.id
+                  ? <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                  : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                }
+              </button>
+            </div>
           </div>
           {expandedLog === log.id && (
             <div className="border-t border-white/8 p-4 space-y-3">
@@ -395,11 +518,14 @@ function LogsTab({ logs, logCount, logPage, setLogPage, expandedLog, setExpanded
           )}
         </div>
       ))}
+
       {totalPages > 1 && (
         <div className="flex justify-center gap-2 pt-4">
-          <button onClick={() => setLogPage(Math.max(1, logPage - 1))} disabled={logPage === 1} className="px-3 py-1.5 rounded-lg bg-white/8 text-white/50 disabled:opacity-30 text-sm">←</button>
+          <button onClick={() => setLogPage(Math.max(1, logPage - 1))} disabled={logPage === 1}
+            className="px-3 py-1.5 rounded-lg bg-white/8 text-white/50 disabled:opacity-30 text-sm">←</button>
           <span className="px-3 py-1.5 text-white/40 text-sm">{logPage} / {totalPages}</span>
-          <button onClick={() => setLogPage(Math.min(totalPages, logPage + 1))} disabled={logPage === totalPages} className="px-3 py-1.5 rounded-lg bg-white/8 text-white/50 disabled:opacity-30 text-sm">→</button>
+          <button onClick={() => setLogPage(Math.min(totalPages, logPage + 1))} disabled={logPage === totalPages}
+            className="px-3 py-1.5 rounded-lg bg-white/8 text-white/50 disabled:opacity-30 text-sm">→</button>
         </div>
       )}
     </div>

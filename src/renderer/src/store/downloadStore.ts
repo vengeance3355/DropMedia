@@ -89,6 +89,12 @@ export function useDownloadStore() {
     []
   )
 
+  const updateLog = useCallback((id: string, log: string) => {
+    setItems(prev => prev.map(item =>
+      item.id === id ? { ...item, downloadLog: log } : item
+    ))
+  }, [])
+
   const removeItem = useCallback((id: string) => {
     setItems((prev) => prev.filter((item) => item.id !== id))
   }, [])
@@ -97,5 +103,5 @@ export function useDownloadStore() {
     setItems((prev) => prev.filter((item) => item.status !== 'completed' && item.status !== 'error'))
   }, [])
 
-  return { items, addItem, updateStatus, updateProgress, removeItem, clearCompleted }
+  return { items, addItem, updateStatus, updateProgress, updateLog, removeItem, clearCompleted }
 }

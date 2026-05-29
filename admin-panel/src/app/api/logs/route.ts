@@ -4,6 +4,28 @@ import { isAuthenticated } from '@/lib/auth'
 import { getSupabase } from "@/lib/supabase"
 import { readLocalLogRows } from '@/lib/localLogs'
 
+export async function DELETE(req: NextRequest) {
+  if (!await isAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { searchParams } = new URL(req.url)
+  const id = searchParams.get('id') // belirli log; yoksa tümünü sil
+
+  let sb
+  try { sb = getSupabase() } catch {
+    return NextResponse.json({ error: 'Supabase bağlantısı yok' }, { status: 503 })
+  }
+
+  if (id) {
+    const { error } = await sb.from('error_logs').delete().eq('id', id)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  } else {
+    const { error } = await sb.from('error_logs').delete().neq('id', '')
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  return NextResponse.json({ ok: true })
+}
+
 export async function GET(req: NextRequest) {
   if (!await isAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
