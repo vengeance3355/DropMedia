@@ -1,5 +1,17 @@
 /// <reference types="vite/client" />
-import { VideoInfo, UpdateStatus } from './types'
+import {
+  AiToolState,
+  LibraryRecord,
+  LinkInboxItem,
+  PostProcessRecipe,
+  PreflightReport,
+  ProductHubState,
+  SmartProfile,
+  UpdateStatus,
+  VideoInfo,
+  WatchItem,
+  WatchSource
+} from './types'
 
 declare global {
   interface Window {
@@ -26,6 +38,8 @@ declare global {
       updateYtDlp:    ()              => Promise<{ success: boolean; version?: string; error?: string }>
       installFfmpeg:  ()              => Promise<{ success: boolean; error?: string }>
       detectCookieSources: (url?: string) => Promise<Array<{ id: string; label: string; browser: string; profile?: string; hasRelevantCookies: boolean }>>
+      repairMediaMetadata: (id: string) => Promise<{ success: boolean; item?: object; error?: string }>
+      repairThumbnail: (id: string) => Promise<{ success: boolean; item?: object; error?: string }>
 
       // Olaylar
       onDownloadProgress: (cb: (d: object) => void) => void
@@ -49,6 +63,35 @@ declare global {
       getSettings:    () => Promise<Record<string, unknown>>
       getSetting:     (key: string) => Promise<unknown>
       setSetting:     (key: string, value: unknown) => Promise<void>
+
+      // Ürün merkezi
+      getProductState:      () => Promise<ProductHubState>
+      importProductState:   (state: Partial<ProductHubState>) => Promise<ProductHubState>
+      addInboxUrls:         (urls: string[] | string, source?: LinkInboxItem['source']) => Promise<LinkInboxItem[]>
+      updateInboxItem:      (id: string, patch: Partial<LinkInboxItem>) => Promise<LinkInboxItem | undefined>
+      removeInboxItem:      (id: string) => Promise<boolean>
+      checkPreflight:       (url: string, cookieBrowser?: string) => Promise<PreflightReport>
+      checkInboxItem:       (id: string, cookieBrowser?: string) => Promise<PreflightReport>
+      addWatchSource:       (input: Partial<WatchSource> & { url: string }) => Promise<WatchSource>
+      updateWatchSource:    (id: string, patch: Partial<WatchSource>) => Promise<WatchSource | undefined>
+      removeWatchSource:    (id: string) => Promise<boolean>
+      checkWatchSource:     (id: string) => Promise<{ source: WatchSource; added: WatchItem[] }>
+      updateWatchItem:      (id: string, patch: Partial<WatchItem>) => Promise<WatchItem | undefined>
+      setSmartProfiles:     (profiles: SmartProfile[]) => Promise<SmartProfile[]>
+      setRecipes:           (recipes: PostProcessRecipe[]) => Promise<PostProcessRecipe[]>
+      upsertLibraryRecord:  (record: Partial<LibraryRecord> & { url: string }) => Promise<LibraryRecord>
+      setAiTools:           (aiTools: AiToolState[]) => Promise<AiToolState[]>
+      onProductStateUpdated:(cb: (state: ProductHubState) => void) => void
+      onWatchItemsFound:    (cb: (data: { source: WatchSource; items: WatchItem[] }) => void) => void
+      offProductListeners:  () => void
+
+      // Supabase sync
+      getSyncStatus:        () => Promise<{ configured: boolean; signedIn: boolean; email?: string; userId?: string; error?: string }>
+      signUpSync:           (email: string, password: string) => Promise<{ configured: boolean; signedIn: boolean; email?: string; userId?: string }>
+      signInSync:           (email: string, password: string) => Promise<{ configured: boolean; signedIn: boolean; email?: string; userId?: string }>
+      signOutSync:          () => Promise<{ configured: boolean; signedIn: boolean; email?: string; userId?: string }>
+      pushProductState:     (state: ProductHubState) => Promise<{ ok: true; syncedAt: number }>
+      pullProductState:     () => Promise<{ data: Partial<ProductHubState> | null; syncedAt?: string }>
 
       // Sistem
       selectFolder:       () => Promise<string | null>

@@ -1,22 +1,32 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTheme } from './hooks/useTheme'
-import { TitleBar } from './components/TitleBar'
 import { UrlInput } from './components/UrlInput'
 import { DownloadQueue } from './components/DownloadQueue'
 import { ConverterTab } from './components/ConverterTab'
+import { SubtitleTab } from './components/SubtitleTab'
 import { Settings } from './components/Settings'
 import { UpdateBanner } from './components/UpdateBanner'
+import { MediaListItem } from './components/MediaListItem'
+import { ProductHub, type ProductHubView } from './components/ProductHub'
 import { useDownloadStore } from './store/downloadStore'
+import { useMediaJobs } from './store/mediaJobStore'
+import type { ConvertedRecord, SubtitleRecord } from './store/mediaJobStore'
 import { DownloadItem, VideoInfo } from './types'
 import { detectPlatform } from './utils/platform'
 
-type Tab = 'queue' | 'history' | 'convert' | 'stats'
+type Tab = 'queue' | 'history' | 'convert' | 'subtitle' | 'stats' | ProductHubView
+const PRODUCT_TABS: readonly ProductHubView[] = ['links', 'watch', 'library', 'automation', 'ai', 'account']
+type RepairMediaMetadataResult = { success: boolean; item?: DownloadItem; error?: string }
+type RepairMediaMetadataApi = typeof window.api & {
+  repairThumbnail: (id: string) => Promise<RepairMediaMetadataResult>
+}
 
 // Tamamlanma sesi (kısa bip — base64 data URL)
 const COMPLETION_BEEP = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
 
 export default function App() {
   const { items, addItem, updateStatus, updateProgress, updateLog, removeItem, clearCompleted } = useDownloadStore()
+  const media = useMediaJobs()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activeTab, setActiveTab]       = useState<Tab>('queue')
   const [downloadDir, setDownloadDir]   = useState('')
@@ -53,7 +63,7 @@ export default function App() {
     })
 
     window.api.onDownloadComplete(async data => {
-      const d = data as { id: string; success: boolean; cancelled?: boolean; error?: string; outputPath?: string; outputDir?: string }
+      const d = data as { id: string; success: boolean; cancelled?: boolean; error?: string; outputPath?: string; outputDir?: string; thumbnailPath?: string; duration?: number }
       if (d.cancelled) {
         updateStatus(d.id, 'cancelled', { error: undefined, speed: '', eta: '' })
         return
@@ -63,6 +73,8 @@ export default function App() {
         error: d.success ? undefined : (d.error || 'İndirme tamamlanamadı. Ayrıntılar admin loguna kaydedildi.'),
         outputPath: d.outputPath,
         outputDir: d.outputDir,
+        ...(d.thumbnailPath ? { thumbnailPath: d.thumbnailPath, localThumbnailPath: d.thumbnailPath } : {}),
+        ...(d.duration !== undefined ? { duration: d.duration } : {}),
         completedAt: d.success ? Date.now() : undefined,
         speed: '',
         eta: ''
@@ -172,8 +184,15 @@ export default function App() {
     startingKeysRef.current.add(key)
     try {
       const dir = downloadDir || await window.api.getDownloadsFolder()
-      const id = addItem(url, format, videoInfo, { status: 'downloading', outputDir: dir, error: undefined })
-      return await startDownloadItem({ id, url, selectedFormat: format, videoInfo, outputDir: dir, status: 'downloading', progress: 0, speed: '', eta: '', totalSize: '' } as DownloadItem, 'start')
+      const thumbnailPath = videoInfo.thumbnailPath
+      const initial = {
+        status: 'downloading' as const,
+        outputDir: dir,
+        error: undefined,
+        ...(thumbnailPath ? { thumbnailPath, localThumbnailPath: thumbnailPath } : {})
+      }
+      const id = addItem(url, format, videoInfo, initial)
+      return await startDownloadItem({ id, url, selectedFormat: format, videoInfo, outputDir: dir, ...initial, progress: 0, speed: '', eta: '', totalSize: '' } as DownloadItem, 'start')
     } catch {
       return false
     } finally {
@@ -192,9 +211,10 @@ export default function App() {
         title:         item.videoInfo?.title,
         speedLimit:    settings['speedLimit'] as number | undefined,
         useTor:        settings['torEnabled'] as boolean | undefined,
-        subtitles:     settings['subtitles'] as boolean | undefined,
-        embedSubs:     settings['embedSubs'] as boolean | undefined,
-        cookieBrowser: settings['cookieBrowser'] as string | undefined
+        subtitles:     getDownloadSubtitleMode(settings) !== 'none',
+        embedSubs:     getDownloadSubtitleMode(settings) === 'soft',
+        cookieBrowser: settings['cookieBrowser'] as string | undefined,
+        thumbnail:     item.videoInfo?.remoteThumbnail ?? item.videoInfo?.thumbnail
       }
       const result = await (mode === 'resume'
         ? window.api.resumeDownload(request)
@@ -292,24 +312,15 @@ export default function App() {
     if (folder) window.api.openFolder(folder)
   }
 
+  async function handleRepairMediaMetadata(id: string) {
+    const result = await (window.api as RepairMediaMetadataApi).repairThumbnail(id)
+    if (result.success && result.item) {
+      updateStatus(id, result.item.status, result.item)
+    }
+  }
+
   const queueItems   = items.filter(i => i.status !== 'completed' && i.status !== 'error' && i.status !== 'cancelled')
   const historyItems = items.filter(i => i.status === 'completed' || i.status === 'error' || i.status === 'cancelled')
-
-  // İstatistik hesaplama
-  const stats = {
-    total:     historyItems.filter(i => i.status === 'completed').length,
-    platforms: historyItems.reduce((acc, i) => {
-      if (i.status !== 'completed') return acc
-      const p = detectPlatform(i.url).name
-      acc[p] = (acc[p] ?? 0) + 1
-      return acc
-    }, {} as Record<string, number>),
-    formats: historyItems.reduce((acc, i) => {
-      if (i.status !== 'completed') return acc
-      acc[i.selectedFormat] = (acc[i.selectedFormat] ?? 0) + 1
-      return acc
-    }, {} as Record<string, number>)
-  }
 
   if (isMini) return <MiniMode items={queueItems} activeCount={activeCount} onExpand={() => { setIsMini(false); window.api.closeMiniWindow() }} />
 
@@ -318,85 +329,172 @@ export default function App() {
       <audio ref={audioRef} src={COMPLETION_BEEP} />
 
       {/* Arkaplan */}
-      <div className="fixed inset-0 bg-gradient-dark pointer-events-none">
-        <div className="absolute top-[-10%] left-[-5%] w-72 h-72 rounded-full bg-purple-600/20 blur-[80px]" />
-        <div className="absolute top-[30%] right-[-5%] w-64 h-64 rounded-full bg-blue-600/15 blur-[80px]" />
-        <div className="absolute bottom-[-5%] left-[30%] w-80 h-80 rounded-full bg-indigo-600/10 blur-[100px]" />
+      <div className="fixed inset-0 bg-[#09090B] pointer-events-none">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_24%_8%,rgba(124,58,237,0.18),transparent_28%),radial-gradient(circle_at_82%_18%,rgba(59,130,246,0.10),transparent_26%),linear-gradient(180deg,#09090B_0%,#0F0F12_52%,#09090B_100%)]" />
+        <div className="absolute inset-0 opacity-[0.035] bg-[linear-gradient(rgba(255,255,255,0.7)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.7)_1px,transparent_1px)] bg-[size:48px_48px]" />
       </div>
 
-      <div className="relative flex flex-col h-screen text-white overflow-hidden">
-        <TitleBar />
+      <div className="relative flex flex-col h-screen text-white overflow-hidden bg-[#09090B]">
+        <div
+          className="flex h-[38px] shrink-0 items-center justify-between border-b border-white/[0.04] bg-[#09090B] px-3 select-none"
+          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-[#7C3AED] to-[#8B5CF6] shadow-[0_0_24px_rgba(124,58,237,0.35)]">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                <path d="M12 3v12" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                <path d="M7 10l5 5 5-5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M5 20h14" stroke="white" strokeWidth="2" strokeLinecap="round" opacity=".75"/>
+              </svg>
+            </div>
+            <span className="text-[13px] font-semibold tracking-[-0.01em] text-white/90">DropMedia</span>
+          </div>
+          <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <button onClick={() => window.api.openMiniWindow()} title="Mini mod" className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-white/[0.06] hover:text-zinc-200">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/>
+              </svg>
+            </button>
+            <button onClick={() => window.api.minimizeWindow()} title="Küçült" className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-white/[0.06] hover:text-zinc-200">
+              <svg width="12" height="2" viewBox="0 0 12 2"><rect width="12" height="1.5" rx="1" fill="currentColor"/></svg>
+            </button>
+            <button onClick={() => window.api.closeWindow()} title="Kapat" className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-red-500 hover:text-white">
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M2 2l8 8M10 2l-8 8"/></svg>
+            </button>
+          </div>
+        </div>
+
         <UpdateBanner />
 
         {/* Clipboard toast */}
         {clipboardToast && (
-          <div className="mx-5 mt-2 flex items-center gap-3 px-4 py-3 rounded-xl bg-purple-500/15 border border-purple-500/25 animate-slide-up">
+          <div className="absolute right-5 top-12 z-40 flex w-[360px] items-center gap-3 rounded-xl border border-[#7C3AED]/30 bg-[#16161A]/95 px-4 py-3 shadow-2xl shadow-black/30 backdrop-blur-xl animate-slide-up">
             <div className="flex-1 min-w-0">
-              <p className="text-white/70 text-xs font-medium">Clipboard'dan URL algılandı</p>
-              <p className="text-white/40 text-xs truncate">{clipboardToast.url}</p>
+              <p className="text-xs font-medium text-white/80">Clipboard'dan URL algılandı</p>
+              <p className="truncate font-mono text-[11px] text-zinc-500">{clipboardToast.url}</p>
             </div>
             <button onClick={() => { setClipboardToast(null) }}
-              className="text-white/40 hover:text-white/70 text-xs">✕</button>
+              className="text-xs text-zinc-500 transition-colors hover:text-white">✕</button>
           </div>
         )}
 
-        <div className="px-5 pt-4 pb-2">
-          <UrlInput
-            onDownload={handleDownload}
-            incomingUrl={clipboardRequest}
-            onIncomingUrlHandled={() => setClipboardRequest(null)}
-          />
-        </div>
+        <div className="flex min-h-0 flex-1">
+          <aside className="flex w-[220px] shrink-0 flex-col border-r border-white/[0.04] bg-[#0F0F12]/95 px-3 py-4">
+            <nav className="flex flex-col gap-1">
+              <SidebarItem active={activeTab === 'queue'} onClick={() => setActiveTab('queue')} icon={<DownloadIcon />}>
+                İndir{queueItems.length > 0 && <Badge>{queueItems.length}</Badge>}
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'links'} onClick={() => setActiveTab('links')} icon={<LinkIcon />}>
+                Linkler
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'watch'} onClick={() => setActiveTab('watch')} icon={<WatchIcon />}>
+                Takip
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<LibraryIcon />}>
+                Kütüphane
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'automation'} onClick={() => setActiveTab('automation')} icon={<AutomationIcon />}>
+                Otomasyon
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} icon={<AiIcon />}>
+                AI
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'account'} onClick={() => setActiveTab('account')} icon={<AccountIcon />}>
+                Hesap
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'history'} onClick={() => setActiveTab('history')} icon={<ClockIcon />}>
+                Geçmiş{historyItems.length > 0 && <Badge muted>{historyItems.length}</Badge>}
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'convert'} onClick={() => setActiveTab('convert')} icon={<RefreshIcon />}>
+                Dönüştür
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'subtitle'} onClick={() => setActiveTab('subtitle')} icon={<SubtitleIcon />}>
+                Altyazı{media.subtitleActive && <span className="ml-1 h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse inline-block" />}
+              </SidebarItem>
+              <SidebarItem active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} icon={<ChartIcon />}>
+                İstatistik
+              </SidebarItem>
+            </nav>
 
-        {/* Tab bar */}
-        <div className="flex items-center gap-1 px-5 pt-2 pb-3 border-b border-white/6">
-          <TabBtn active={activeTab === 'queue'} onClick={() => setActiveTab('queue')}>
-            Kuyruk{queueItems.length > 0 && <Badge>{queueItems.length}</Badge>}
-          </TabBtn>
-          <TabBtn active={activeTab === 'history'} onClick={() => setActiveTab('history')}>
-            Geçmiş{historyItems.length > 0 && <Badge muted>{historyItems.length}</Badge>}
-          </TabBtn>
-          <TabBtn active={activeTab === 'convert'} onClick={() => setActiveTab('convert')}>
-            Dönüştür
-          </TabBtn>
-          <TabBtn active={activeTab === 'stats'} onClick={() => setActiveTab('stats')}>
-            İstatistik
-          </TabBtn>
-          <div className="flex-1" />
-          <button onClick={() => window.api.openMiniWindow()}
-            title="Mini mod" className="w-8 h-8 rounded-xl flex items-center justify-center text-white/40 hover:text-white hover:bg-white/8 transition-all">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/>
-            </svg>
-          </button>
-          <button onClick={() => setSettingsOpen(true)} title="Ayarlar"
-            className="w-8 h-8 rounded-xl flex items-center justify-center text-white/40 hover:text-white hover:bg-white/8 transition-all">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-          </button>
-        </div>
+            <div className="mt-auto space-y-3">
+              {activeCount > 0 && (
+                <div className="rounded-xl border border-[#7C3AED]/20 bg-[#7C3AED]/10 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-1.5 w-1.5 rounded-full bg-[#8B5CF6] animate-pulse" />
+                    <span className="text-[11px] font-medium text-violet-200">{activeCount} aktif indirme</span>
+                  </div>
+                </div>
+              )}
+              <button
+                onClick={() => setSettingsOpen(true)}
+                title="Ayarlar"
+                className="flex h-10 w-full items-center gap-3 rounded-lg px-3 text-[13px] font-medium text-zinc-500 transition-all hover:bg-[#252530] hover:text-zinc-200"
+              >
+                <SettingsIcon />
+                Ayarlar
+              </button>
+            </div>
+          </aside>
 
-        {/* Liste / İstatistik */}
-        <div className="flex-1 overflow-y-auto px-5 py-3 scrollbar-thin">
-          {activeTab === 'queue' && (
-            <DownloadQueue items={queueItems} onCancel={handleCancel} onPause={handlePause} onResume={handleResume} onRedownload={handleRedownload} onRemove={removeItem} onClearCompleted={clearCompleted} onShowItemInFolder={handleShowItemInFolder} onConvertDone={handleConvertDone} onUrlDrop={handleDetectedUrl} />
-          )}
-          {activeTab === 'history' && (
-            <DownloadQueue items={historyItems} onCancel={handleCancel} onPause={handlePause} onResume={handleResume} onRedownload={handleRedownload} onRemove={removeItem} onClearCompleted={clearCompleted} onShowItemInFolder={handleShowItemInFolder} onConvertDone={handleConvertDone} onUrlDrop={handleDetectedUrl} />
-          )}
-          {activeTab === 'convert' && <ConverterTab completedItems={historyItems} />}
-          {activeTab === 'stats' && <StatsView stats={stats} />}
-        </div>
+          <main className="flex min-w-0 flex-1 flex-col bg-[#0F0F12]/40">
+            <div className="border-b border-white/[0.04] px-6 py-5">
+              <UrlInput
+                onDownload={handleDownload}
+                incomingUrl={clipboardRequest}
+                onIncomingUrlHandled={() => setClipboardRequest(null)}
+              />
+            </div>
 
-        {activeCount > 0 && (
-          <div className="px-5 py-2 border-t border-white/6 flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
-            <span className="text-white/40 text-xs">{activeCount} indirme devam ediyor</span>
+            <div className="flex-1 overflow-y-auto px-6 py-5 scrollbar-thin">
+              <div className="mx-auto max-w-6xl">
+                {activeTab === 'queue' && (
+                  <DownloadQueue items={queueItems} onCancel={handleCancel} onPause={handlePause} onResume={handleResume} onRedownload={handleRedownload} onRemove={removeItem} onClearCompleted={clearCompleted} onShowItemInFolder={handleShowItemInFolder} onConvertDone={handleConvertDone} onUrlDrop={handleDetectedUrl} />
+                )}
+                {isProductTab(activeTab) && (
+                  <ProductHub
+                    view={activeTab}
+                    historyItems={historyItems}
+                    onUseUrl={handleDetectedUrl}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                  />
+                )}
+                {activeTab === 'history' && (
+                  <DownloadQueue items={historyItems} onCancel={handleCancel} onPause={handlePause} onResume={handleResume} onRedownload={handleRedownload} onRemove={removeItem} onClearCompleted={clearCompleted} onShowItemInFolder={handleShowItemInFolder} onConvertDone={handleConvertDone} onUrlDrop={handleDetectedUrl} onRepairMediaMetadata={handleRepairMediaMetadata} />
+                )}
+                {activeTab === 'convert' && (
+                  <ConverterTab
+                    completedItems={historyItems}
+                    jobs={media.jobs}
+                    convertedRecords={media.convertedRecords}
+                    onConvert={media.startConvert}
+                    onCancelJob={media.cancelJob}
+                    onDismissJob={media.dismissJob}
+                    onRemoveConverted={media.removeConverted}
+                  />
+                )}
+                {activeTab === 'subtitle' && (
+                  <SubtitleTab
+                    completedItems={historyItems}
+                    jobs={media.jobs}
+                    subtitleRecords={media.subtitleRecords}
+                    onSubtitle={media.startSubtitle}
+                    onCancelJob={media.cancelJob}
+                    onDismissJob={media.dismissJob}
+                    onRemoveSubtitle={media.removeSubtitle}
+                  />
+                )}
+                {activeTab === 'stats' && (
+                  <StatsView
+                    historyItems={historyItems}
+                    convertedRecords={media.convertedRecords}
+                    subtitleRecords={media.subtitleRecords}
+                  />
+                )}
+              </div>
+            </div>
+          </main>
+        </div>
           </div>
-        )}
-      </div>
 
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
     </>
@@ -448,65 +546,179 @@ function MiniMode({ items, activeCount, onExpand }: {
   )
 }
 
-function StatsView({ stats }: { stats: { total: number; platforms: Record<string, number>; formats: Record<string, number> } }) {
+function StatsView({ historyItems, convertedRecords, subtitleRecords }: {
+  historyItems: DownloadItem[]
+  convertedRecords: ConvertedRecord[]
+  subtitleRecords: SubtitleRecord[]
+}) {
+  const completed = historyItems.filter(i => i.status === 'completed')
+  const platforms = countBy(completed, i => detectPlatform(i.url).name)
+  const formats = countBy(completed, i => (i.selectedFormat || 'unknown').toLowerCase())
+  const mediaTypes = countBy(completed, i => isAudioFormat(i.selectedFormat) ? 'Ses' : 'Video')
+  const totalSize = completed.reduce((sum, item) => sum + parseSize(item.totalSize), 0)
+  const recent = [...completed].sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0)).slice(0, 5)
+  const last7 = getLast7Days(completed)
+  const topPlatform = Object.entries(platforms).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '-'
+  const maxDay = Math.max(1, ...last7.map(d => d.count))
+
   return (
     <div className="space-y-4 animate-fade-in">
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
           <p className="text-white/40 text-xs mb-1">Toplam İndirme</p>
-          <p className="text-3xl font-bold text-white">{stats.total}</p>
+          <p className="text-3xl font-bold text-white">{completed.length}</p>
         </div>
         <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
-          <p className="text-white/40 text-xs mb-1">Platform Sayısı</p>
-          <p className="text-3xl font-bold text-white">{Object.keys(stats.platforms).length}</p>
+          <p className="text-white/40 text-xs mb-1">Dönüştürme</p>
+          <p className="text-3xl font-bold text-white">{convertedRecords.length}</p>
+        </div>
+        <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
+          <p className="text-white/40 text-xs mb-1">Altyazı İşlemi</p>
+          <p className="text-3xl font-bold text-white">{subtitleRecords.length}</p>
+        </div>
+        <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
+          <p className="text-white/40 text-xs mb-1">Toplam Boyut</p>
+          <p className="text-3xl font-bold text-white">{formatBytes(totalSize)}</p>
         </div>
       </div>
 
-      {Object.keys(stats.platforms).length > 0 && (
+      {completed.length > 0 && (
         <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
-          <p className="text-white/40 text-xs mb-3 uppercase tracking-wider">Platform Dağılımı</p>
-          <div className="space-y-2">
-            {Object.entries(stats.platforms).sort((a,b) => b[1]-a[1]).map(([p, n]) => (
-              <div key={p} className="flex items-center gap-3">
-                <span className="text-white/60 text-sm w-24 truncate capitalize">{p}</span>
-                <div className="flex-1 h-1.5 bg-white/8 rounded-full overflow-hidden">
-                  <div className="h-full bg-gradient-button rounded-full" style={{ width: `${(n / stats.total) * 100}%` }} />
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <p className="text-white/40 text-xs uppercase tracking-wider">Son 7 Gün</p>
+            <span className="text-white/30 text-xs">En çok: {topPlatform}</span>
+          </div>
+          <div className="flex h-28 items-end gap-2">
+            {last7.map(day => (
+              <div key={day.key} className="flex min-w-0 flex-1 flex-col items-center gap-2">
+                <div className="flex h-20 w-full items-end rounded-lg bg-white/[0.04] px-1">
+                  <div
+                    className="w-full rounded-md bg-gradient-button shadow-[0_0_14px_rgba(124,58,237,0.22)]"
+                    style={{ height: `${Math.max(8, (day.count / maxDay) * 100)}%` }}
+                  />
                 </div>
-                <span className="text-white/40 text-xs w-8 text-right">{n}</span>
+                <span className="text-[10px] text-white/30">{day.label}</span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {Object.keys(stats.formats).length > 0 && (
+      <div className="grid gap-4 md:grid-cols-2">
+        <DistributionCard title="Platform Dağılımı" total={completed.length} data={platforms} />
+        <DistributionCard title="Format Dağılımı" total={completed.length} data={formats} />
+        <DistributionCard title="Video / Ses" total={completed.length} data={mediaTypes} />
         <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
-          <p className="text-white/40 text-xs mb-3 uppercase tracking-wider">Format Dağılımı</p>
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(stats.formats).sort((a,b) => b[1]-a[1]).map(([f, n]) => (
-              <div key={f} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/8">
-                <span className="text-white/70 text-xs font-medium uppercase">{f}</span>
-                <span className="text-white/30 text-xs">{n}</span>
-              </div>
-            ))}
+          <p className="text-white/40 text-xs mb-3 uppercase tracking-wider">Son 5 İndirilen</p>
+          <div className="space-y-2">
+            {recent.map(item => <MediaListItem key={item.id} item={item} compact />)}
+            {recent.length === 0 && <p className="py-4 text-center text-sm text-white/25">Henüz veri yok</p>}
           </div>
         </div>
-      )}
+      </div>
 
-      {stats.total === 0 && (
+      {completed.length === 0 && convertedRecords.length === 0 && subtitleRecords.length === 0 && (
         <div className="text-center py-12">
-          <p className="text-white/20 text-sm">Henüz indirme geçmişi yok</p>
+          <p className="text-white/20 text-sm">Henüz veri yok</p>
         </div>
       )}
     </div>
   )
 }
 
-function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function DistributionCard({ title, total, data }: { title: string; total: number; data: Record<string, number> }) {
+  const entries = Object.entries(data).sort((a, b) => b[1] - a[1])
+  return (
+    <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
+      <p className="text-white/40 text-xs mb-3 uppercase tracking-wider">{title}</p>
+      {entries.length === 0 ? (
+        <p className="py-4 text-center text-sm text-white/25">Henüz veri yok</p>
+      ) : (
+        <div className="space-y-2">
+          {entries.map(([name, count]) => (
+            <div key={name} className="flex items-center gap-3">
+              <span className="w-24 truncate text-sm capitalize text-white/60">{name}</span>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/8">
+                <div className="h-full rounded-full bg-gradient-button" style={{ width: `${(count / Math.max(1, total)) * 100}%` }} />
+              </div>
+              <span className="w-8 text-right text-xs text-white/40">{count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function countBy(items: DownloadItem[], getKey: (item: DownloadItem) => string): Record<string, number> {
+  return items.reduce((acc, item) => {
+    const key = getKey(item)
+    acc[key] = (acc[key] ?? 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+}
+
+function isAudioFormat(format: string): boolean {
+  return ['mp3', 'm4a', 'aac', 'wav', 'flac', 'opus'].includes(format.toLowerCase())
+}
+
+function getLast7Days(items: DownloadItem[]): { key: string; label: string; count: number }[] {
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date()
+    date.setDate(date.getDate() - (6 - index))
+    date.setHours(0, 0, 0, 0)
+    const start = date.getTime()
+    const end = start + 24 * 60 * 60 * 1000
+    return {
+      key: date.toISOString().slice(0, 10),
+      label: date.toLocaleDateString('tr-TR', { weekday: 'short' }),
+      count: items.filter(item => (item.completedAt ?? 0) >= start && (item.completedAt ?? 0) < end).length
+    }
+  })
+}
+
+function parseSize(value: string): number {
+  const match = value.match(/([\d.]+)\s*([kmgt]?i?b)?/i)
+  if (!match) return 0
+  const amount = Number(match[1])
+  const unit = (match[2] || '').toLowerCase()
+  const multiplier = unit.startsWith('t') ? 1024 ** 4
+    : unit.startsWith('g') ? 1024 ** 3
+      : unit.startsWith('m') ? 1024 ** 2
+        : unit.startsWith('k') ? 1024
+          : 1
+  return Number.isFinite(amount) ? amount * multiplier : 0
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let index = 0
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024
+    index += 1
+  }
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`
+}
+
+function getDownloadSubtitleMode(settings: Record<string, unknown>): 'none' | 'save' | 'soft' | 'burn' {
+  const mode = settings['subtitleMode']
+  if (mode === 'save' || mode === 'soft' || mode === 'burn') return mode
+  if (settings['subtitles']) return settings['embedSubs'] ? 'soft' : 'save'
+  return 'none'
+}
+
+function isProductTab(tab: Tab): tab is ProductHubView {
+  return (PRODUCT_TABS as readonly string[]).includes(tab)
+}
+
+function SidebarItem({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: React.ReactNode; children: React.ReactNode }) {
   return (
     <button onClick={onClick}
-      className={`flex items-center px-3 py-1.5 rounded-xl text-sm font-medium transition-all
-        ${active ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70 hover:bg-white/6'}`}>
+      className={`flex h-10 items-center gap-3 rounded-lg px-3 text-[13px] font-medium transition-all
+        ${active ? 'bg-[#1E1E25] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]' : 'text-zinc-500 hover:bg-[#252530] hover:text-zinc-300'}`}>
+      <span className="flex h-5 w-5 items-center justify-center">{icon}</span>
       {children}
     </button>
   )
@@ -519,4 +731,52 @@ function Badge({ children, muted }: { children: React.ReactNode; muted?: boolean
       {children}
     </span>
   )
+}
+
+function DownloadIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+}
+
+function LinkIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1"/></svg>
+}
+
+function WatchIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+}
+
+function LibraryIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-1.5Z"/><path d="M8 7h6"/><path d="M8 11h8"/></svg>
+}
+
+function ClockIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+}
+
+function AutomationIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><circle cx="12" cy="12" r="4"/><path d="m16 8 2-2"/><path d="m6 18 2-2"/><path d="m16 16 2 2"/><path d="m6 6 2 2"/></svg>
+}
+
+function AiIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 1v4"/><path d="M15 1v4"/><path d="M9 19v4"/><path d="M15 19v4"/><path d="M1 9h4"/><path d="M1 15h4"/><path d="M19 9h4"/><path d="M19 15h4"/><path d="M9 14v-4l3 4 3-4v4"/></svg>
+}
+
+function AccountIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+}
+
+function RefreshIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 1-15.2 6.5"/><path d="M3 12A9 9 0 0 1 18.2 5.5"/><path d="M3 17v5h5"/><path d="M21 7V2h-5"/></svg>
+}
+
+function ChartIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16v-5"/><path d="M13 16V8"/><path d="M18 16v-7"/></svg>
+}
+
+function SubtitleIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/></svg>
+}
+
+function SettingsIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V22h-4v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.5-1H3v-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.5V3h4v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 19.4 9c.2.6.8 1 1.5 1h.1v4h-.1c-.7 0-1.3.4-1.5 1z"/></svg>
 }

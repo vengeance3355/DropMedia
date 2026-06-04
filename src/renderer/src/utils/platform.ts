@@ -1,3 +1,5 @@
+export { formatDuration } from './formatDuration'
+
 export function detectPlatform(url: string): { name: string; color: string; icon: string } {
   const u = url.toLowerCase()
   if (u.includes('youtube.com') || u.includes('youtu.be'))
@@ -21,13 +23,4 @@ export function detectPlatform(url: string): { name: string; color: string; icon
   if (u.includes('bilibili.com'))
     return { name: 'Bilibili', color: '#00a1d6', icon: 'bili' }
   return { name: 'Video', color: '#7c3aed', icon: 'video' }
-}
-
-export function formatDuration(seconds: number): string {
-  if (!seconds) return ''
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = seconds % 60
-  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  return `${m}:${String(s).padStart(2, '0')}`
 }

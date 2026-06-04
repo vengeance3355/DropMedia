@@ -17,6 +17,13 @@ function normalizeLoadedItems(items: DownloadItem[]): DownloadItem[] {
   })
 }
 
+function mergeDefined<T extends DownloadItem>(existing: T, update: Partial<DownloadItem>): T {
+  const clean = Object.fromEntries(
+    Object.entries(update).filter(([, value]) => value !== undefined)
+  ) as Partial<DownloadItem>
+  return { ...existing, ...clean }
+}
+
 export function useDownloadStore() {
   const loadedRef = useRef(false)
   const [items, setItems] = useState<DownloadItem[]>(() => {
@@ -37,6 +44,30 @@ export function useDownloadStore() {
       }
     }).finally(() => {
       loadedRef.current = true
+    })
+  }, [])
+
+  useEffect(() => {
+    const api = window.api as typeof window.api & {
+      onDownloadUpdated?: (cb: (item: Partial<DownloadItem> & { id: string }) => void) => void
+      onDownloadItemsUpdated?: (cb: (items: DownloadItem[]) => void) => void
+    }
+    api.onDownloadUpdated?.((updated) => {
+      setItems(prev => prev.map(item =>
+        item.id === updated.id ? mergeDefined(item, updated) : item
+      ))
+    })
+    api.onDownloadItemsUpdated?.((updatedItems) => {
+      setItems(prev => {
+        const byId = new Map(updatedItems.map(item => [item.id, item]))
+        const merged = prev.map(item => {
+          const updated = byId.get(item.id)
+          return updated ? mergeDefined(item, updated) : item
+        })
+        const known = new Set(prev.map(item => item.id))
+        const added = updatedItems.filter(item => !known.has(item.id))
+        return [...merged, ...added]
+      })
     })
   }, [])
 
@@ -73,7 +104,7 @@ export function useDownloadStore() {
   const updateStatus = useCallback((id: string, status: DownloadStatus, extra?: Partial<DownloadItem>) => {
     setItems((prev) =>
       prev.map((item) =>
-        item.id === id ? { ...item, status, ...extra } : item
+        item.id === id ? mergeDefined(item, { status, ...extra }) : item
       )
     )
   }, [])
@@ -100,7 +131,7 @@ export function useDownloadStore() {
   }, [])
 
   const clearCompleted = useCallback(() => {
-    setItems((prev) => prev.filter((item) => item.status !== 'completed' && item.status !== 'error'))
+    setItems((prev) => prev.filter((item) => item.status !== 'completed' && item.status !== 'error' && item.status !== 'cancelled'))
   }, [])
 
   return { items, addItem, updateStatus, updateProgress, updateLog, removeItem, clearCompleted }

@@ -9,6 +9,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "audit:package": "node scripts/audit-package.js",
     "dist": "npm run build && electron-builder",
     "dist:linux": "npm run build && electron-builder --linux",
     "dist:win": "npm run build && electron-builder --win",
@@ -38,12 +39,17 @@
     "typescript": "^5.7.2",
     "vite": "^5.4.11"
   },
-  "build": {
+    "build": {
     "appId": "com.dropmedia.app",
     "productName": "DropMedia",
     "directories": {
       "output": "release"
     },
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
     "publish": {
       "provider": "github",
       "owner": "vengeance3355",
@@ -55,7 +61,8 @@
         "deb"
       ],
       "icon": "resources/icon.png",
-      "category": "Network"
+      "category": "Network",
+      "maintainer": "vengeance3355@users.noreply.github.com"
     },
     "win": {
       "target": [

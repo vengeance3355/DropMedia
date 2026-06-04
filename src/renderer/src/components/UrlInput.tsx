@@ -107,11 +107,10 @@ export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandl
       {/* URL Giriş Kutusu */}
       <div className="relative group">
         <div className={`
-          flex items-center gap-3 px-4 py-3.5 rounded-2xl
-          bg-white/5 border border-white/10
-          focus-within:border-purple-500/50 focus-within:bg-white/8
+          gradient-border flex items-center gap-3 px-4 py-3.5 rounded-xl
+          bg-[#16161A]
           transition-all duration-300
-          ${loading ? 'border-purple-500/30 animate-pulse-slow' : ''}
+          ${loading ? 'glow-violet' : ''}
         `}>
           {/* Platform ikonu */}
           <div className={`
@@ -152,14 +151,14 @@ export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandl
             )}
             <button
               onClick={handlePaste}
-              className="px-3 py-1.5 rounded-lg bg-white/8 hover:bg-white/12 text-white/60 hover:text-white text-xs font-medium transition-all"
+              className="no-drag px-3 py-1.5 rounded-lg bg-[#1E1E25] hover:bg-[#252530] text-zinc-400 hover:text-zinc-200 text-xs font-medium transition-all"
             >
               Yapıştır
             </button>
             <button
               onClick={handleFetch}
               disabled={!url || loading}
-              className="px-3 py-1.5 rounded-lg bg-gradient-button text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-all shadow-lg shadow-purple-500/20"
+              className="no-drag px-4 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-lg shadow-violet-500/25 active:scale-95"
             >
               {loading ? (
                 <span className="flex items-center gap-1.5">
@@ -204,10 +203,10 @@ function VideoCard({ info, selectedFormat, onFormatChange, onDownload, videoForm
   audioFormats: VideoFormat[]
 }) {
   return (
-    <div className="rounded-2xl bg-white/5 border border-white/10 overflow-hidden">
+    <div className="rounded-xl bg-[#16161A] border border-white/[0.06] overflow-hidden animate-slide-up">
       <div className="flex gap-4 p-4">
         {/* Thumbnail */}
-        <div className="relative shrink-0 w-32 h-20 rounded-xl overflow-hidden bg-white/5">
+        <div className="relative shrink-0 w-32 h-20 rounded-xl overflow-hidden bg-[#1E1E25]">
           {info.thumbnail ? (
             <img src={info.thumbnail} alt="" className="w-full h-full object-cover" />
           ) : (
@@ -258,9 +257,9 @@ function VideoCard({ info, selectedFormat, onFormatChange, onDownload, videoForm
         <button
           onClick={onDownload}
           disabled={!selectedFormat}
-          className="w-full py-2.5 rounded-xl bg-gradient-button text-white font-semibold text-sm
-            hover:opacity-90 active:scale-[0.98] transition-all duration-150
-            shadow-lg shadow-purple-500/25 disabled:opacity-40 disabled:cursor-not-allowed
+          className="w-full py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-semibold text-sm
+            active:scale-[0.98] transition-all duration-150
+            shadow-lg shadow-violet-500/25 disabled:opacity-40 disabled:cursor-not-allowed
             flex items-center justify-center gap-2"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -288,8 +287,8 @@ function FormatGroup({ label, formats, selected, onSelect }: {
           onClick={() => onSelect(f.id)}
           className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all duration-150
             ${selected === f.id
-              ? 'bg-gradient-button text-white shadow-sm shadow-purple-500/30'
-              : 'bg-white/8 text-white/60 hover:bg-white/12 hover:text-white'
+              ? 'bg-violet-600 text-white shadow-sm shadow-violet-500/30'
+              : 'bg-[#1E1E25] text-zinc-400 hover:bg-[#252530] hover:text-zinc-200'
             }`}
         >
           {f.label}

@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, globalShortcut, clipboard } from 'electron'
+import { spawn } from 'child_process'
+import { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, globalShortcut, clipboard, net } from 'electron'
 import { join } from 'path'
 import { existsSync, appendFileSync } from 'fs'
 
@@ -6,11 +7,15 @@ function dbgSettings(msg: string) {
   try { appendFileSync('/tmp/dropmedia_settings.log', `[${new Date().toISOString()}] ${msg}\n`) } catch { /* ignore */ }
 }
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { setupDownloadHandlers } from './downloader'
+import { buildAccessArgs, getYtDlpPath, probeDuration, setupDownloadHandlers } from './downloader'
+import { setupMediaJobHandlers } from './mediaJobs'
+import { setupProductHubHandlers, startProductWatchScheduler, stopProductWatchScheduler } from './productHub'
+import { setupSyncHandlers } from './sync'
 import { setupUpdater } from './updater'
 import { setupInstallerHandlers } from './installer'
 import { flushPendingRemoteLogs, logActivity, logError, getLocalLogPath } from './logger'
 import { startAdminBridge } from './adminBridge'
+import { downloadRemoteThumbnail, downloadRemoteThumbnailForItem, generateThumbnail, generateThumbnailForItem, pathToDataUrl } from './thumbnailCache'
 import Store from 'electron-store'
 
 const store = new Store()
@@ -235,6 +240,31 @@ app.whenReady().then(() => {
 
   setupWindowControls()
   setupDownloadHandlers(ipcMain)
+  setupMediaJobHandlers(ipcMain)
+  setupProductHubHandlers(ipcMain)
+  setupSyncHandlers(ipcMain)
+
+  // Thumbnail IPC — video path'ten ffmpeg ile frame çıkar, image path'ten dosyayı oku
+  ipcMain.handle('get-thumbnail', async (_e, filePath: string) => {
+    try {
+      if (!filePath || !existsSync(filePath)) return null
+
+      if (/\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(filePath)) {
+        return pathToDataUrl(filePath)
+      }
+
+      if (/\.(mp4|mkv|webm|mov|avi|flv|m4v|ts|wmv)$/i.test(filePath)) {
+        const outPath = await generateThumbnail(filePath)
+        return outPath ? pathToDataUrl(outPath) : null
+      }
+      return null
+    } catch { return null }
+  })
+  ipcMain.handle('repair-media-metadata', async (_e, id?: string) => {
+    if (!id) return { success: false, error: 'Tek kayıt id gerekli.' }
+    return repairDownloadItem(id)
+  })
+  ipcMain.handle('repair-thumbnail', async (_e, id: string) => repairDownloadItem(id))
   setupInstallerHandlers(ipcMain)
   setupSettingsHandlers(ipcMain, store)
   setupClipboardHandlers(ipcMain)
@@ -243,6 +273,7 @@ app.whenReady().then(() => {
   setupTray()
   setupUpdater(mainWindow!)
   startAdminBridge()
+  startProductWatchScheduler()
   flushPendingRemoteLogs()
   const remoteLogRetry = setInterval(() => flushPendingRemoteLogs(), 60_000)
   remoteLogRetry.unref?.()
@@ -262,6 +293,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   app.isQuiting = true
   stopClipboardWatch()
+  stopProductWatchScheduler()
   globalShortcut.unregisterAll()
 })
 
@@ -292,7 +324,15 @@ function setupWindowControls(): void {
   ipcMain.handle('open-mini-window',       () => createMiniWindow())
   ipcMain.handle('close-mini-window',      () => miniWindow?.close())
   ipcMain.handle('open-file-in-player',    (_e, path: string) => shell.openPath(path))
-  ipcMain.handle('start-file-drag',        async (_e, filePath: string) => {
+  ipcMain.handle('copy-file-to-clipboard', (_e, filePath: string) => {
+    try {
+      clipboard.writeBuffer('text/uri-list', Buffer.from(`file://${filePath}\r\n`))
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+  ipcMain.handle('start-file-drag',        async (_e, filePath: string, iconDataUrl?: string) => {
     try {
       if (!filePath || !existsSync(filePath)) {
         await logError({
@@ -307,8 +347,25 @@ function setupWindowControls(): void {
         return { success: false, error: 'Ana pencere hazır değil.' }
       }
 
-      const iconPath = join(__dirname, '../../resources/icon.png')
-      const icon = existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty()
+      let icon = nativeImage.createEmpty()
+      if (iconDataUrl?.startsWith('data:')) {
+        icon = nativeImage.createFromDataURL(iconDataUrl)
+      } else if (iconDataUrl?.startsWith('file://')) {
+        const p = decodeURI(iconDataUrl.replace(/^file:\/\//, ''))
+        if (existsSync(p)) icon = nativeImage.createFromPath(p)
+      }
+      if (icon.isEmpty() && iconDataUrl && (iconDataUrl.startsWith('https://') || iconDataUrl.startsWith('http://'))) {
+        try {
+          const resp = await net.fetch(iconDataUrl)
+          const buf = Buffer.from(await resp.arrayBuffer())
+          icon = nativeImage.createFromBuffer(buf)
+        } catch { /* fall through */ }
+      }
+      if (icon.isEmpty()) {
+        const iconPath = join(__dirname, '../../resources/icon.png')
+        if (existsSync(iconPath)) icon = nativeImage.createFromPath(iconPath)
+      }
+      if (!icon.isEmpty()) icon = icon.resize({ width: 96, height: 56 })
       mainWindow.webContents.startDrag({ file: filePath, icon: icon.isEmpty() ? nativeImage.createEmpty() : icon })
       return { success: true }
     } catch (err) {
@@ -384,6 +441,188 @@ function setupSettingsHandlers(ipcMain: Electron.IpcMain, store: Store): void {
   ipcMain.handle('open-url',             (_e, url: string) => shell.openExternal(url))
   ipcMain.handle('app-version',          () => app.getVersion())
   ipcMain.handle('get-log-path',         () => getLocalLogPath())
+}
+
+async function repairDownloadItem(id: string): Promise<{ success: boolean; item?: DownloadItemRecord; error?: string }> {
+  if (!id) return { success: false, error: 'Kayıt bulunamadı.' }
+
+  const items = store.get('downloadItems', []) as DownloadItemRecord[]
+  const index = items.findIndex(item => item.id === id)
+  if (index < 0) return { success: false, error: 'Kayıt bulunamadı.' }
+
+  const item = { ...items[index] }
+  let changed = false
+  const existingThumbnail = normalizeFilePath(item.thumbnailPath || item.localThumbnailPath)
+  const platform = detectRepairPlatform(item)
+
+  if (existingThumbnail && existsSync(existingThumbnail)) {
+    item.thumbnailPath = existingThumbnail
+    item.localThumbnailPath = existingThumbnail
+    changed = true
+  } else if (platform === 'instagram') {
+    const remote = await getRemoteThumbnailForRepair(item, true)
+    const downloaded = remote ? await downloadRemoteThumbnailForItem(remote, item.id).catch(() => null) : null
+    if (downloaded) {
+      item.thumbnailPath = downloaded
+      item.localThumbnailPath = downloaded
+      changed = true
+    } else if (item.outputPath && existsSync(normalizeFilePath(item.outputPath))) {
+      const generated = await generateThumbnailForItem(normalizeFilePath(item.outputPath), item.id).catch(() => null)
+      if (generated) {
+        item.thumbnailPath = generated
+        item.localThumbnailPath = generated
+        changed = true
+      }
+    }
+  } else if (platform === 'discord') {
+    if (item.outputPath && existsSync(normalizeFilePath(item.outputPath))) {
+      const generated = await generateThumbnailForItem(normalizeFilePath(item.outputPath), item.id).catch(() => null)
+      if (generated) {
+        item.thumbnailPath = generated
+        item.localThumbnailPath = generated
+        changed = true
+      }
+    } else {
+      logActivity({
+        eventType: 'general',
+        message: 'Discord thumbnail repair skipped: missing outputPath',
+        details: { id: item.id, outputPath: item.outputPath }
+      })
+    }
+  } else {
+    const generated = item.outputPath && existsSync(normalizeFilePath(item.outputPath))
+      ? await generateThumbnail(normalizeFilePath(item.outputPath)).catch(() => null)
+      : null
+    const remote = await getRemoteThumbnailForRepair(item, false)
+    const downloaded = generated || (remote ? await downloadRemoteThumbnail(remote).catch(() => null) : null)
+
+    if (downloaded) {
+      item.thumbnailPath = downloaded
+      item.localThumbnailPath = downloaded
+      changed = true
+    }
+  }
+
+  if (item.outputPath && existsSync(normalizeFilePath(item.outputPath)) && !item.duration) {
+    const duration = await probeDuration(normalizeFilePath(item.outputPath)).catch(() => undefined)
+    if (duration) {
+      item.duration = duration
+      changed = true
+    }
+  }
+
+  if (!changed) return { success: false, item, error: 'Onarılacak kapak veya süre bulunamadı.' }
+
+  items[index] = item
+  store.set('downloadItems', items)
+  mainWindow?.webContents.send('download-updated', item)
+  miniWindow?.webContents.send('download-updated', item)
+  mainWindow?.webContents.send('download-items-updated', items)
+  miniWindow?.webContents.send('download-items-updated', items)
+  return { success: true, item }
+}
+
+async function getRemoteThumbnailForRepair(item: DownloadItemRecord, fetchFromSource: boolean): Promise<string | undefined> {
+  const direct = [
+    item.videoInfo?.remoteThumbnail,
+    item.thumbnailUrl,
+    item.videoInfo?.thumbnail,
+    item.thumbnail
+  ].find(isHttpUrlString)
+  if (direct) return direct
+  if (!fetchFromSource) return undefined
+  return fetchSourceThumbnailUrl(item.url)
+}
+
+function fetchSourceThumbnailUrl(url: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      resolve(undefined)
+      return
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      resolve(undefined)
+      return
+    }
+
+    const proc = spawn(getYtDlpPath(), [
+      '--ignore-config',
+      '--dump-json',
+      '--no-playlist',
+      '--no-warnings',
+      ...buildAccessArgs(url),
+      '--',
+      url
+    ])
+    let stdout = ''
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM')
+      resolve(undefined)
+    }, 20_000)
+
+    proc.stdout.on('data', (d: Buffer) => {
+      stdout += d.toString()
+    })
+    proc.on('error', () => {
+      clearTimeout(timer)
+      resolve(undefined)
+    })
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      if (code !== 0) {
+        resolve(undefined)
+        return
+      }
+      try {
+        const parsed = JSON.parse(stdout) as { thumbnail?: string; thumbnails?: Array<{ url?: string }> }
+        resolve(parsed.thumbnail || parsed.thumbnails?.find(t => isHttpUrlString(t.url))?.url)
+      } catch {
+        resolve(undefined)
+      }
+    })
+  })
+}
+
+function detectRepairPlatform(item: DownloadItemRecord): 'instagram' | 'discord' | 'other' {
+  const url = item.url.toLowerCase()
+  const platform = (item.videoInfo?.platform || '').toLowerCase()
+  if (platform.includes('instagram') || url.includes('instagram.com')) return 'instagram'
+  if (platform.includes('discord') || url.includes('discord.com') || url.includes('discordapp.com') || url.includes('cdn.discordapp.com')) return 'discord'
+  return 'other'
+}
+
+function isHttpUrlString(value?: string): value is string {
+  return !!value && /^https?:\/\//i.test(value)
+}
+
+function normalizeFilePath(value?: string): string {
+  if (!value) return ''
+  if (!/^file:\/\//i.test(value)) return value
+  try {
+    return decodeURI(new URL(value).pathname)
+  } catch {
+    return value.replace(/^file:\/\//i, '')
+  }
+}
+
+interface DownloadItemRecord {
+  id: string
+  url: string
+  status: string
+  outputPath?: string
+  thumbnailPath?: string
+  localThumbnailPath?: string
+  thumbnailUrl?: string
+  thumbnail?: string
+  duration?: number
+  videoInfo?: {
+    thumbnail?: string
+    remoteThumbnail?: string
+    platform?: string
+  }
 }
 
 // TypeScript için app genişletme

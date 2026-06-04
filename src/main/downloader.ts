@@ -5,6 +5,7 @@ import Store from 'electron-store'
 import { statSync } from 'fs'
 import { logError, logStat, logDownload } from './logger'
 import { detectCookieSources, resolveCookieBrowser } from './cookies'
+import { generateThumbnail, downloadRemoteThumbnail } from './thumbnailCache'
 
 const DEBUG_LOG = '/tmp/dropmedia_debug.log'
 function dbg(msg: string) {
@@ -20,7 +21,7 @@ const cancellingDownloads = new Set<string>()
 
 // ── Yol yönetimi ─────────────────────────────────────────────────────────────
 
-function getYtDlpPath(): string {
+export function getYtDlpPath(): string {
   const custom = store.get('ytDlpPath') as string | undefined
   if (custom && existsSync(custom)) return custom
   const userBin = `${process.env.HOME}/.local/bin/yt-dlp`
@@ -49,8 +50,42 @@ export function hasFfmpeg(): boolean {
   catch { return false }
 }
 
-function getFfmpegPath(): string {
+export function getFfmpegPath(): string {
   return FFMPEG_CANDIDATE_PATHS.find(p => existsSync(p)) ?? 'ffmpeg'
+}
+
+function getFfprobePath(): string {
+  const ffmpegPath = getFfmpegPath()
+  if (ffmpegPath.endsWith('/ffmpeg')) {
+    const ffprobePath = `${ffmpegPath.slice(0, -'ffmpeg'.length)}ffprobe`
+    if (existsSync(ffprobePath)) return ffprobePath
+  }
+  return 'ffprobe'
+}
+
+export function probeDuration(outputPath: string): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const proc = spawn(getFfprobePath(), [
+      '-v', 'quiet',
+      '-show_entries', 'format=duration',
+      '-of', 'csv=p=0',
+      outputPath
+    ])
+    let stdout = ''
+
+    proc.stdout.on('data', (d: Buffer) => {
+      stdout += d.toString()
+    })
+    proc.on('error', () => resolve(undefined))
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        resolve(undefined)
+        return
+      }
+      const parsed = Number.parseFloat(stdout.trim())
+      resolve(Number.isFinite(parsed) ? Math.floor(parsed) : undefined)
+    })
+  })
 }
 
 function checkBinary(bin: string, args: string[], timeoutMs: number): Promise<boolean> {
@@ -92,7 +127,7 @@ function isTwitterUrl(url: string): boolean {
   return u.includes('twitter.com') || u.includes('x.com')
 }
 
-function buildAccessArgs(url: string, opts: { useTor?: boolean; cookieBrowser?: string } = {}): string[] {
+export function buildAccessArgs(url: string, opts: { useTor?: boolean; cookieBrowser?: string } = {}): string[] {
   const args: string[] = []
   const useTor = opts.useTor ?? !!(store.get('torEnabled') as boolean | undefined)
   const cookieBrowser = opts.cookieBrowser ?? (store.get('cookieBrowser') as string | undefined)
@@ -162,7 +197,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
   // Tekil video bilgisi
   ipcMain.handle('fetch-info', async (_e, url: string) => {
     const cached = getCache(url)
-    if (cached) return cached
+    if (cached) return await withInstagramThumbnailPath(url, cached)
 
     const bin = getYtDlpPath()
     const baseArgs = ['--ignore-config', '--dump-json', '--no-playlist', '--no-warnings']
@@ -201,8 +236,9 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
 
     try {
       const info = parseVideoInfo(JSON.parse(result.stdout))
-      setCache(url, info)
-      return info
+      const next = await withInstagramThumbnailPath(url, info)
+      setCache(url, next)
+      return next
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err))
       await logError({ errorType: 'fetch', errorMessage: 'Video bilgisi işlenemedi.', url, operation: 'fetch-info-parse', command: formatCommand(bin, usedArgs), stackTrace: e.stack, stdout: result.stdout })
@@ -280,45 +316,6 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
       return true
     }
     return false
-  })
-
-  // Format dönüştürme
-  ipcMain.handle('convert-file', (_e, { inputPath, outputFormat, outputPath }: { inputPath: string; outputFormat: string; outputPath: string }) => {
-    if (!hasFfmpeg()) return { success: false, error: 'ffmpeg kurulu değil' }
-    return new Promise((resolve) => {
-      const bin = getFfmpegPath()
-      const args = ['-i', inputPath, '-y', outputPath]
-      const proc = spawn(bin, args)
-      let stderr = ''
-      proc.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
-      proc.on('close', (code) => {
-        if (code === 0) {
-          resolve({ success: true })
-          return
-        }
-        const msg = 'Dosya dönüştürülemedi. Dosya formatı veya ffmpeg işlemi başarısız oldu.'
-        logError({
-          errorType: 'download',
-          errorMessage: msg,
-          operation: 'convert-file',
-          command: formatCommand(bin, args),
-          exitCode: code,
-          stderr
-        })
-        resolve({ success: false, error: msg })
-      })
-      proc.on('error', (e: Error) => {
-        const msg = 'ffmpeg çalıştırılamadı. Kurulumu kontrol edin.'
-        logError({
-          errorType: 'download',
-          errorMessage: msg,
-          operation: 'convert-file-spawn',
-          command: formatCommand(bin, args),
-          stackTrace: e.stack
-        })
-        resolve({ success: false, error: msg })
-      })
-    })
   })
 
   // yt-dlp kontrolü
@@ -509,12 +506,24 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
 
     const elapsedMs = Date.now() - startMs
     const error = success ? undefined : friendlyError(stderr || stdoutTail, url, 'download')
+    const thumbPromise =
+      success && platform === 'discord' && outputPath
+        ? generateThumbnail(outputPath).catch(() => null)
+        : success && platform === 'instagram' && opts.thumbnail
+          ? downloadRemoteThumbnail(opts.thumbnail).catch(() => null)
+          : Promise.resolve(undefined)
+    const thumbnailPath = await thumbPromise
+    const duration = success && outputPath
+      ? await probeDuration(outputPath).catch(() => undefined)
+      : undefined
     getMainWindow()?.webContents.send('download-complete', {
       id,
       success,
       code,
       error,
       outputPath: success ? outputPath : undefined,
+      thumbnailPath: thumbnailPath || undefined,
+      duration: duration || undefined,
       outputDir
     })
     if (success) {
@@ -706,7 +715,7 @@ function parseOutputPath(line: string): string {
   return ''
 }
 
-function formatCommand(bin: string, args: string[]): string {
+export function formatCommand(bin: string, args: string[]): string {
   return [bin, ...args.map(arg => {
     if (/^https?:\/\//i.test(arg)) {
       try {
@@ -723,15 +732,35 @@ function formatCommand(bin: string, args: string[]): string {
   })].join(' ')
 }
 
-function detectPlatformName(url: string): string {
+export function detectPlatformName(url: string): string {
   const u = url.toLowerCase()
   if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube'
   if (u.includes('twitter.com') || u.includes('x.com'))   return 'twitter'
   if (u.includes('instagram.com'))  return 'instagram'
+  if (u.includes('discord.com') || u.includes('discordapp.com') || u.includes('cdn.discordapp.com')) return 'discord'
   if (u.includes('tiktok.com'))     return 'tiktok'
   if (u.includes('twitch.tv'))      return 'twitch'
   if (u.includes('vimeo.com'))      return 'vimeo'
   return 'other'
+}
+
+async function withInstagramThumbnailPath(url: string, info: object & { thumbnail?: string; remoteThumbnail?: string }) {
+  if (detectPlatformName(url) !== 'instagram' || !info.thumbnail) return info
+  const thumbnailPath = await downloadRemoteThumbnail(info.remoteThumbnail ?? info.thumbnail).catch(() => null)
+  if (!thumbnailPath) return info
+  return {
+    ...info,
+    remoteThumbnail: info.remoteThumbnail ?? info.thumbnail,
+    thumbnail: pathToFileUrl(thumbnailPath),
+    thumbnailPath
+  }
+}
+
+function pathToFileUrl(filePath: string): string {
+  if (/^file:\/\//i.test(filePath)) return filePath
+  const normalized = filePath.replace(/\\/g, '/')
+  const prefixed = normalized.startsWith('/') ? normalized : `/${normalized}`
+  return `file://${encodeURI(prefixed)}`
 }
 
 function parseProgress(line: string): Record<string, unknown> | null {
@@ -771,7 +800,8 @@ function parseVideoInfo(raw: RawInfo) {
     id: raw.id, title: raw.title, thumbnail: raw.thumbnail,
     duration: raw.duration, uploader: raw.uploader,
     url: raw.webpage_url, platform: raw.extractor,
-    formats: [...videoQ, ...audioQ], hasFfmpeg: ffmpeg
+    formats: [...videoQ, ...audioQ], hasFfmpeg: ffmpeg,
+    remoteThumbnail: raw.thumbnail
   }
 }
 
@@ -795,4 +825,5 @@ interface DownloadOptions {
   subtitles?: boolean
   embedSubs?: boolean
   cookieBrowser?: string
+  thumbnail?: string
 }

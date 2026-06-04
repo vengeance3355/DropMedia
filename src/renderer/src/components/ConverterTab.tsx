@@ -1,8 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DownloadItem } from '../types'
+import { MediaJob, ConvertedRecord } from '../store/mediaJobStore'
+import { MediaListItem } from './MediaListItem'
 
 interface Props {
   completedItems: DownloadItem[]
+  jobs: MediaJob[]
+  convertedRecords: ConvertedRecord[]
+  onConvert: (opts: { inputPath: string; outputFormat: string; outputPath: string; title: string }) => Promise<string>
+  onCancelJob: (id: string) => void
+  onDismissJob: (id: string) => void
+  onRemoveConverted: (id: string) => void
 }
 
 const OUTPUT_FORMATS = [
@@ -15,29 +23,19 @@ const OUTPUT_FORMATS = [
   { id: 'mkv',  label: 'MKV',  desc: 'Video' },
 ]
 
-const CONVERT_MSGS = [
-  'ffmpeg başlatılıyor…',
-  'Medya akışları okunuyor…',
-  'Codec dönüşümü yapılıyor…',
-  'Ses kanalları işleniyor…',
-  'Çıktı dosyası yazılıyor…',
-  'Son dokunuşlar yapılıyor…',
-]
+type SourceMode = 'history' | 'file' | 'converted'
 
-type SourceMode = 'history' | 'file'
-
-export function ConverterTab({ completedItems }: Props) {
+export function ConverterTab({ completedItems, jobs, convertedRecords, onConvert, onCancelJob, onDismissJob, onRemoveConverted }: Props) {
   const itemsWithPath = completedItems.filter(i => i.status === 'completed' && i.outputPath)
 
   const [sourceMode, setSourceMode]     = useState<SourceMode>(itemsWithPath.length > 0 ? 'history' : 'file')
   const [selectedItem, setSelectedItem] = useState<DownloadItem | null>(itemsWithPath[0] ?? null)
   const [customPath, setCustomPath]     = useState('')
   const [outputFormat, setOutputFormat] = useState('mp3')
-  const [converting, setConverting]     = useState(false)
-  const [progress, setProgress]         = useState(0)
-  const [msgIdx, setMsgIdx]             = useState(0)
-  const [result, setResult]             = useState<{ success: boolean; outputPath?: string; error?: string } | null>(null)
-  const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [trackedJobId, setTrackedJobId] = useState<string | null>(null)
+
+  const job = jobs.find(j => j.id === trackedJobId && j.kind === 'convert')
+    ?? jobs.find(j => j.kind === 'convert')
 
   // Tamamlanan öğeler değişince history modunda ilk geçerli öğeyi seç
   useEffect(() => {
@@ -46,78 +44,37 @@ export function ConverterTab({ completedItems }: Props) {
     }
   }, [itemsWithPath.length])
 
-  // Dönüşüm sırasında dönen mesajlar + sahte ilerleme
-  useEffect(() => {
-    if (!converting) {
-      if (progressTimer.current) clearInterval(progressTimer.current)
-      return
-    }
-    setProgress(5)
-    setMsgIdx(0)
-    progressTimer.current = setInterval(() => {
-      setProgress(p => {
-        // 90'a kadar kademeli artış, sonra bekle
-        if (p >= 90) return p
-        const step = p < 40 ? 8 : p < 70 ? 4 : 1
-        return Math.min(p + step, 90)
-      })
-      setMsgIdx(i => (i + 1) % CONVERT_MSGS.length)
-    }, 1200)
-    return () => { if (progressTimer.current) clearInterval(progressTimer.current) }
-  }, [converting])
-
   const inputPath = sourceMode === 'history' ? selectedItem?.outputPath : customPath
 
   async function handleBrowse() {
     const path = await window.api.selectFile()
-    if (path) { setCustomPath(path); setResult(null) }
+    if (path) setCustomPath(path)
   }
 
   async function handleConvert() {
     if (!inputPath) return
     const outputPath = inputPath.replace(/\.[^.]+$/, `.${outputFormat}`)
-    setConverting(true)
-    setResult(null)
-    try {
-      const r = await window.api.convertFile({ inputPath, outputFormat, outputPath }) as { success: boolean; error?: string }
-      setProgress(100)
-      setTimeout(() => {
-        setConverting(false)
-        setResult(r.success ? { success: true, outputPath } : { success: false, error: r.error ?? 'Dönüştürme başarısız' })
-      }, 300)
-    } catch (e) {
-      setConverting(false)
-      setResult({ success: false, error: e instanceof Error ? e.message : 'Bilinmeyen hata' })
-    }
-  }
-
-  function handleOpenResult() {
-    if (result?.outputPath) window.api.openFileInPlayer(result.outputPath)
-  }
-
-  function handleShowResult() {
-    if (result?.outputPath) window.api.showItemInFolder(result.outputPath)
-  }
-
-  function reset() {
-    setResult(null)
-    setProgress(0)
-    setCustomPath('')
+    const title = sourceMode === 'history'
+      ? (selectedItem?.videoInfo?.title || inputPath.replace(/.*[\\/]/, ''))
+      : inputPath.replace(/.*[\\/]/, '')
+    const id = await onConvert({ inputPath, outputFormat, outputPath, title })
+    setTrackedJobId(id)
   }
 
   const inputExt  = inputPath ? inputPath.split('.').pop()?.toLowerCase() : null
   const sameFormat = inputExt === outputFormat
+  const showJob = job && (job.status === 'running' || job.id === trackedJobId)
 
   return (
     <div className="space-y-4 animate-fade-in">
       {/* Kaynak seçimi */}
-      <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
+      <div className="bg-[#16161A] border border-white/[0.06] rounded-xl p-4">
         <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Kaynak</p>
 
         {/* Mod seçici */}
-        <div className="flex gap-1 mb-4 p-1 bg-white/5 rounded-xl w-fit">
+        <div className="flex gap-1 mb-4 p-1 bg-[#1E1E25] rounded-xl w-fit">
           <button
-            onClick={() => { setSourceMode('history'); setResult(null) }}
+            onClick={() => setSourceMode('history')}
             className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
               sourceMode === 'history' ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70'
             }`}
@@ -125,12 +82,20 @@ export function ConverterTab({ completedItems }: Props) {
             Geçmişten Seç {itemsWithPath.length > 0 && <span className="ml-1 text-white/30">({itemsWithPath.length})</span>}
           </button>
           <button
-            onClick={() => { setSourceMode('file'); setResult(null) }}
+            onClick={() => setSourceMode('file')}
             className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
               sourceMode === 'file' ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70'
             }`}
           >
             Dosya Seç
+          </button>
+          <button
+            onClick={() => setSourceMode('converted')}
+            className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+              sourceMode === 'converted' ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70'
+            }`}
+          >
+            Dönüştürüldü {convertedRecords.length > 0 && <span className="ml-1 text-white/30">({convertedRecords.length})</span>}
           </button>
         </div>
 
@@ -143,30 +108,56 @@ export function ConverterTab({ completedItems }: Props) {
               {itemsWithPath.map(item => (
                 <button
                   key={item.id}
-                  onClick={() => { setSelectedItem(item); setResult(null) }}
-                  className={`w-full text-left flex items-center gap-3 px-3 py-2 rounded-xl transition-all ${
+                  onClick={() => setSelectedItem(item)}
+                  className={`w-full rounded-xl border px-3 py-2 text-left transition-all ${
                     selectedItem?.id === item.id
-                      ? 'bg-purple-500/15 border border-purple-500/25'
-                      : 'hover:bg-white/5 border border-transparent'
+                      ? 'border-violet-500/35 bg-violet-600/15'
+                      : 'border-transparent hover:border-white/8 hover:bg-white/[0.04]'
                   }`}
                 >
-                  {item.videoInfo?.thumbnail && (
-                    <img src={item.videoInfo.thumbnail} alt="" className="w-10 h-7 rounded-lg object-cover shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white/80 text-xs font-medium truncate">
-                      {item.videoInfo?.title ?? item.url}
-                    </p>
-                    <p className="text-white/30 text-[10px] truncate mt-0.5">
-                      {item.outputPath?.split('/').pop()}
-                    </p>
-                  </div>
-                  {selectedItem?.id === item.id && (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="text-purple-400 shrink-0">
-                      <polyline points="20 6 9 17 4 12"/>
-                    </svg>
-                  )}
+                  <MediaListItem item={item} compact />
                 </button>
+              ))}
+            </div>
+          )
+        )}
+
+        {sourceMode === 'converted' && (
+          convertedRecords.length === 0 ? (
+            <p className="text-white/30 text-sm text-center py-4">Henüz dönüştürülen dosya yok</p>
+          ) : (
+            <div className="space-y-1 max-h-64 overflow-y-auto scrollbar-thin pr-1">
+              {convertedRecords.map(rec => (
+                <div key={rec.id} className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-[#1E1E25] group">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded shrink-0">{rec.format}</span>
+                      <p className="text-white/70 text-xs font-medium truncate">{rec.title || rec.inputName}</p>
+                    </div>
+                    <p className="text-white/25 text-[10px] truncate mt-0.5">{rec.outputPath.replace(/.*[\\/]/, '')}</p>
+                  </div>
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    <button onClick={() => window.api.openFileInPlayer(rec.outputPath)} title="Oynat"
+                      className="w-6 h-6 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/8 transition-all">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                    </button>
+                    <button draggable
+                      onDragStart={e => { e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', rec.outputPath); window.api.startFileDrag(rec.outputPath).catch(() => {}) }}
+                      onClick={e => e.preventDefault()} title="Sürükleyerek paylaş"
+                      className="w-6 h-6 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/8 transition-all cursor-grab">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    </button>
+                    <button onClick={() => window.api.showItemInFolder(rec.outputPath)} title="Klasörde göster"
+                      className="w-6 h-6 rounded-lg flex items-center justify-center text-white/40 hover:text-white hover:bg-white/8 transition-all">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                    </button>
+                    <button onClick={() => onRemoveConverted(rec.id)} title="Listeden kaldır"
+                      className="w-6 h-6 rounded-lg flex items-center justify-center text-white/40 hover:text-red-400 hover:bg-white/8 transition-all">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                  </div>
+                  <span className="text-white/20 text-[10px] shrink-0">{new Date(rec.convertedAt).toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
               ))}
             </div>
           )
@@ -193,7 +184,7 @@ export function ConverterTab({ completedItems }: Props) {
       </div>
 
       {/* Format seçimi */}
-      <div className="bg-white/5 border border-white/8 rounded-2xl p-4">
+      {sourceMode !== 'converted' && <div className="bg-[#16161A] border border-white/[0.06] rounded-xl p-4">
         <p className="text-white/40 text-xs uppercase tracking-wider mb-3">Çıktı Formatı</p>
         <div className="flex flex-wrap gap-2">
           {OUTPUT_FORMATS.map(f => (
@@ -202,8 +193,8 @@ export function ConverterTab({ completedItems }: Props) {
               onClick={() => setOutputFormat(f.id)}
               className={`flex flex-col items-center px-3 py-2 rounded-xl text-xs font-medium transition-all ${
                 outputFormat === f.id
-                  ? 'bg-gradient-button text-white shadow-sm shadow-purple-500/30'
-                  : 'bg-white/8 text-white/60 hover:bg-white/12 hover:text-white'
+                  ? 'bg-violet-600 text-white shadow-sm shadow-violet-500/30'
+                  : 'bg-[#1E1E25] text-zinc-400 hover:bg-[#252530] hover:text-zinc-200'
               }`}
             >
               <span>{f.label}</span>
@@ -211,75 +202,18 @@ export function ConverterTab({ completedItems }: Props) {
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       {/* Dönüştür butonu + progress */}
-      {converting ? (
-        <div className="bg-white/5 border border-white/8 rounded-2xl p-4 space-y-3">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-purple-400 animate-pulse">{CONVERT_MSGS[msgIdx]}</span>
-            <span className="text-white/30">{progress < 100 ? `${progress}%` : 'Tamamlandı'}</span>
-          </div>
-          <div className="h-1.5 bg-white/8 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-progress rounded-full transition-all duration-700"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-        </div>
-      ) : result ? (
-        <div className={`rounded-2xl p-4 border ${
-          result.success
-            ? 'bg-green-500/10 border-green-500/20'
-            : 'bg-red-500/10 border-red-500/20'
-        }`}>
-          {result.success ? (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-green-400">
-                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
-                </svg>
-                <span className="text-green-400 text-sm font-medium">Dönüştürme tamamlandı</span>
-              </div>
-              <p className="text-white/40 text-xs truncate">{result.outputPath?.split('/').pop()}</p>
-              <div className="flex gap-2">
-                <button onClick={handleOpenResult}
-                  className="flex-1 py-2 rounded-xl bg-white/8 hover:bg-white/12 text-white/70 hover:text-white text-xs font-medium transition-all">
-                  Oynat
-                </button>
-                <button onClick={handleShowResult}
-                  className="flex-1 py-2 rounded-xl bg-white/8 hover:bg-white/12 text-white/70 hover:text-white text-xs font-medium transition-all">
-                  Klasörde Göster
-                </button>
-                <button onClick={reset}
-                  className="px-4 py-2 rounded-xl bg-white/8 hover:bg-white/12 text-white/40 hover:text-white text-xs transition-all">
-                  Yeni
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400">
-                  <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
-                </svg>
-                <span className="text-red-400 text-sm font-medium">Dönüştürme başarısız</span>
-              </div>
-              <p className="text-red-400/70 text-xs">{result.error}</p>
-              <button onClick={reset}
-                className="mt-1 px-4 py-1.5 rounded-xl bg-white/8 hover:bg-white/12 text-white/60 text-xs transition-all">
-                Tekrar Dene
-              </button>
-            </div>
-          )}
-        </div>
+      {sourceMode !== 'converted' && (showJob && job ? (
+        <JobPanel job={job} onCancel={onCancelJob} onDismiss={() => { onDismissJob(job.id); setTrackedJobId(null) }} />
       ) : (
         <button
           onClick={handleConvert}
           disabled={!inputPath || sameFormat}
-          className="w-full py-3 rounded-2xl bg-gradient-button text-white font-semibold text-sm
-            hover:opacity-90 active:scale-[0.99] transition-all duration-150
-            shadow-lg shadow-purple-500/25 disabled:opacity-40 disabled:cursor-not-allowed
+          className="w-full py-3 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white font-semibold text-sm
+            active:scale-[0.99] transition-all duration-150
+            shadow-lg shadow-violet-500/25 disabled:opacity-40 disabled:cursor-not-allowed
             flex items-center justify-center gap-2"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -287,7 +221,75 @@ export function ConverterTab({ completedItems }: Props) {
           </svg>
           {sameFormat ? `Kaynak zaten ${outputFormat.toUpperCase()}` : `${outputFormat.toUpperCase()} formatına dönüştür`}
         </button>
-      )}
+      ))}
+    </div>
+  )
+}
+
+export function JobPanel({ job, onCancel, onDismiss }: { job: MediaJob; onCancel: (id: string) => void; onDismiss: () => void }) {
+  if (job.status === 'running') {
+    return (
+      <div className="bg-[#16161A] border border-white/[0.06] rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-purple-400 animate-pulse">{job.message || 'İşleniyor…'}</span>
+          <div className="flex items-center gap-3">
+            <span className="text-white/30">{job.percent != null ? `${job.percent}%` : ''}</span>
+            <button onClick={() => onCancel(job.id)} className="text-white/30 hover:text-red-400 transition-colors">İptal</button>
+          </div>
+        </div>
+        <div className="h-1.5 bg-[#252530] rounded-full overflow-hidden">
+          {job.percent != null ? (
+            <div className="h-full animate-shimmer rounded-full transition-all duration-700" style={{ width: `${job.percent}%` }} />
+          ) : (
+            <div className="h-full w-1/3 animate-shimmer rounded-full" />
+          )}
+        </div>
+        <p className="text-white/20 text-[10px] truncate">{job.title}</p>
+      </div>
+    )
+  }
+
+  if (job.status === 'done') {
+    return (
+      <div className="rounded-2xl p-4 border bg-green-500/10 border-green-500/20 space-y-3">
+        <div className="flex items-center gap-2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-green-400">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+          <span className="text-green-400 text-sm font-medium">İşlem tamamlandı</span>
+        </div>
+        <p className="text-white/40 text-xs truncate">{job.outputPath?.split('/').pop()}</p>
+        <div className="flex gap-2">
+          <button onClick={() => job.outputPath && window.api.openFileInPlayer(job.outputPath)}
+            className="flex-1 py-2 rounded-xl bg-white/8 hover:bg-white/12 text-white/70 hover:text-white text-xs font-medium transition-all">
+            Oynat
+          </button>
+          <button onClick={() => job.outputPath && window.api.showItemInFolder(job.outputPath)}
+            className="flex-1 py-2 rounded-xl bg-white/8 hover:bg-white/12 text-white/70 hover:text-white text-xs font-medium transition-all">
+            Klasörde Göster
+          </button>
+          <button onClick={onDismiss}
+            className="px-4 py-2 rounded-xl bg-white/8 hover:bg-white/12 text-white/40 hover:text-white text-xs transition-all">
+            Yeni
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-2xl p-4 border bg-red-500/10 border-red-500/20 space-y-2">
+      <div className="flex items-center gap-2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400">
+          <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+        </svg>
+        <span className="text-red-400 text-sm font-medium">{job.status === 'cancelled' ? 'İptal edildi' : 'İşlem başarısız'}</span>
+      </div>
+      {job.error && <p className="text-red-400/70 text-xs">{job.error}</p>}
+      <button onClick={onDismiss}
+        className="mt-1 px-4 py-1.5 rounded-xl bg-white/8 hover:bg-white/12 text-white/60 text-xs transition-all">
+        Tamam
+      </button>
     </div>
   )
 }

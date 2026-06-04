@@ -16,18 +16,30 @@ export function UpdateBanner() {
   if (status.type === 'not-available' || status.type === 'checking') return null
 
   if (status.type === 'available') {
+    const notes = extractReleaseNotes(status.info)
     return (
       <Banner color="purple" onDismiss={() => setDismissed(true)}>
-        <span className="text-white/80 text-xs">
-          Yeni sürüm mevcut
-          {status.info?.version ? ` (v${status.info.version})` : ''}
-        </span>
-        <button
-          onClick={() => window.api.downloadUpdate()}
-          className="ml-3 px-3 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-medium transition-all"
-        >
-          İndir
-        </button>
+        <div className="min-w-0">
+          <span className="text-white/80 text-xs">
+            Yeni sürüm mevcut
+            {status.info?.version ? ` (v${status.info.version})` : ''}
+          </span>
+          {notes && <pre className="mt-1 max-h-24 max-w-3xl overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-white/45">{notes}</pre>}
+        </div>
+        <div className="ml-3 flex shrink-0 items-center gap-2">
+          <button
+            onClick={() => window.api.downloadUpdate()}
+            className="px-3 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-medium transition-all"
+          >
+            Güncelle
+          </button>
+          <button
+            onClick={() => setDismissed(true)}
+            className="px-3 py-1 rounded-lg bg-white/8 hover:bg-white/15 text-white/60 text-xs font-medium transition-all"
+          >
+            Bu Sürümle Devam Et
+          </button>
+        </div>
       </Banner>
     )
   }
@@ -73,6 +85,23 @@ export function UpdateBanner() {
   }
 
   return null
+}
+
+function extractReleaseNotes(info?: Record<string, unknown>): string {
+  const notes = info?.releaseNotes
+  if (typeof notes === 'string') return notes.slice(0, 1200)
+  if (Array.isArray(notes)) {
+    return notes
+      .map(item => {
+        if (typeof item === 'string') return item
+        if (item && typeof item === 'object' && 'note' in item) return String((item as { note?: unknown }).note ?? '')
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+      .slice(0, 1200)
+  }
+  return ''
 }
 
 function Banner({

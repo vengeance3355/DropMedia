@@ -53,3 +53,111 @@ CREATE INDEX idx_errors_type     ON error_logs(error_type);
 CREATE INDEX idx_stats_device    ON stats(device_id);
 CREATE INDEX idx_stats_created   ON stats(created_at DESC);
 CREATE INDEX idx_stats_platform  ON stats(platform);
+
+-- Kullanıcı sync ayarları: Supabase Auth kullanır.
+CREATE TABLE IF NOT EXISTS user_settings (
+  id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id     UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  namespace   TEXT NOT NULL,
+  data        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, namespace)
+);
+
+CREATE TABLE IF NOT EXISTS download_library (
+  id             UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id        UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  source_url     TEXT NOT NULL,
+  title          TEXT,
+  platform       TEXT,
+  format         TEXT,
+  duration_sec   INTEGER,
+  tags           TEXT[] DEFAULT '{}',
+  favorite       BOOLEAN DEFAULT FALSE,
+  provenance     JSONB DEFAULT '{}'::jsonb,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, source_url)
+);
+
+CREATE TABLE IF NOT EXISTS watch_sources (
+  id               UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id          UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  source_type      TEXT NOT NULL,
+  label            TEXT NOT NULL,
+  url              TEXT NOT NULL,
+  enabled          BOOLEAN DEFAULT TRUE,
+  interval_minutes INTEGER DEFAULT 30,
+  action           TEXT DEFAULT 'notify',
+  default_format   TEXT DEFAULT 'best',
+  filters          JSONB DEFAULT '{}'::jsonb,
+  last_checked_at  TIMESTAMPTZ,
+  last_error       TEXT,
+  created_at       TIMESTAMPTZ DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, url)
+);
+
+CREATE TABLE IF NOT EXISTS watch_items (
+  id             UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id        UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  source_id      UUID REFERENCES watch_sources(id) ON DELETE CASCADE,
+  source_url     TEXT NOT NULL,
+  title          TEXT,
+  platform       TEXT,
+  thumbnail_url  TEXT,
+  duration_sec   INTEGER,
+  status         TEXT DEFAULT 'new',
+  discovered_at  TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, source_url)
+);
+
+-- Admin release/changelog kayıtları. GitHub release asıl dağıtım kaynağıdır;
+-- bu tablo admin panelde not düzenleme ve geçmiş izleme içindir.
+CREATE TABLE IF NOT EXISTS app_releases (
+  id             UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  version        TEXT NOT NULL UNIQUE,
+  channel        TEXT DEFAULT 'stable',
+  title          TEXT,
+  notes          TEXT,
+  github_tag     TEXT,
+  appimage_url   TEXT,
+  deb_url        TEXT,
+  latest_yml_url TEXT,
+  mandatory      BOOLEAN DEFAULT FALSE,
+  published      BOOLEAN DEFAULT FALSE,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE download_library ENABLE ROW LEVEL SECURITY;
+ALTER TABLE watch_sources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE watch_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_releases ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "user_settings_owner_all" ON user_settings;
+CREATE POLICY "user_settings_owner_all" ON user_settings
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "download_library_owner_all" ON download_library;
+CREATE POLICY "download_library_owner_all" ON download_library
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "watch_sources_owner_all" ON watch_sources;
+CREATE POLICY "watch_sources_owner_all" ON watch_sources
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "watch_items_owner_all" ON watch_items;
+CREATE POLICY "watch_items_owner_all" ON watch_items
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- app_releases service_role ile admin panelden yönetilir; public okuma açılmadı.
+
+CREATE INDEX idx_user_settings_user ON user_settings(user_id);
+CREATE INDEX idx_library_user       ON download_library(user_id);
+CREATE INDEX idx_watch_sources_user ON watch_sources(user_id);
+CREATE INDEX idx_watch_items_user   ON watch_items(user_id);
+CREATE INDEX idx_releases_version   ON app_releases(version);
+CREATE INDEX idx_releases_created   ON app_releases(created_at DESC);

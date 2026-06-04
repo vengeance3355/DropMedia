@@ -1,87 +1,194 @@
 #!/usr/bin/env node
-/**
- * DropMedia Release Script
- * Kullanım: node scripts/release.js [patch|minor|major]
+/*
+ * DropMedia release helper.
+ *
+ * Usage:
+ *   node scripts/release.js patch --notes-file release-notes/v1.0.2.md
+ *   node scripts/release.js 1.2.0 --notes "Release notes"
+ *   node scripts/release.js patch --dry-run
  */
 
 const { spawnSync } = require('child_process')
-const fs   = require('fs')
+const fs = require('fs')
 const path = require('path')
 
-function run(cmd, args, opts = {}) {
-  const result = spawnSync(cmd, args, { stdio: 'inherit', ...opts })
-  if (result.status !== 0) {
-    console.error(`❌ Hata: ${cmd} ${args.join(' ')}`)
-    process.exit(result.status ?? 1)
+const root = path.resolve(__dirname, '..')
+const releaseDir = path.join(root, 'release')
+const notesDir = path.join(root, 'release-notes')
+
+function main() {
+  const options = parseArgs(process.argv.slice(2))
+  const pkgPath = path.join(root, 'package.json')
+  const pkg = readJson(pkgPath)
+  const currentVersion = pkg.version
+  const nextVersion = resolveNextVersion(currentVersion, options.bump)
+  const tag = `v${nextVersion}`
+
+  if (!options.allowDirty) assertCleanGit()
+  assertCommand('gh', ['--version'])
+  assertCommand('git', ['--version'])
+
+  const notes = resolveNotes(options, currentVersion, nextVersion)
+  const notesPath = path.join(notesDir, `${tag}.md`)
+
+  console.log(`DropMedia release ${currentVersion} -> ${nextVersion}`)
+  console.log(`Notes: ${path.relative(root, notesPath)}`)
+  if (options.dryRun) {
+    console.log('Dry run: no files changed, no build, no upload.')
+    return
   }
-  return result
+
+  fs.mkdirSync(notesDir, { recursive: true })
+  fs.writeFileSync(notesPath, notes.endsWith('\n') ? notes : `${notes}\n`)
+  updateVersionFiles(nextVersion)
+
+  run('npm', ['run', 'build'])
+  run('npx', ['electron-builder', '--linux', '--publish', 'never'])
+  run('npm', ['run', 'audit:package'])
+
+  const files = collectReleaseFiles(nextVersion)
+  if (files.length === 0) fail(`No release files found for ${nextVersion}`)
+
+  run('git', ['add', 'package.json', 'package-lock.json', path.relative(root, notesPath)])
+  run('git', ['commit', '-m', `chore: release ${tag}`])
+  run('git', ['tag', tag])
+  run('git', ['push'])
+  run('git', ['push', 'origin', tag])
+
+  const ghArgs = [
+    'release', 'create', tag,
+    ...files,
+    '--title', `DropMedia ${tag}`,
+    '--notes-file', notesPath
+  ]
+  if (options.draft) ghArgs.push('--draft')
+  if (options.prerelease) ghArgs.push('--prerelease')
+  run('gh', ghArgs)
+
+  console.log(`Release uploaded: https://github.com/vengeance3355/DropMedia/releases/tag/${tag}`)
+  console.log('Evidence:')
+  console.log(`- version=${nextVersion}`)
+  console.log(`- files=${files.map(file => path.basename(file)).join(', ')}`)
+  console.log('- audit=passed')
 }
 
-function runWithOutput(cmd, args) {
-  const result = spawnSync(cmd, args, { encoding: 'utf8' })
-  return result.stdout?.trim() ?? ''
+function parseArgs(args) {
+  const options = {
+    bump: 'patch',
+    notes: '',
+    notesFile: '',
+    dryRun: false,
+    draft: false,
+    prerelease: false,
+    allowDirty: false
+  }
+
+  if (args[0] && !args[0].startsWith('--')) options.bump = args.shift()
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]
+    if (arg === '--notes') options.notes = args[++i] ?? ''
+    else if (arg === '--notes-file') options.notesFile = args[++i] ?? ''
+    else if (arg === '--dry-run') options.dryRun = true
+    else if (arg === '--draft') options.draft = true
+    else if (arg === '--prerelease') options.prerelease = true
+    else if (arg === '--allow-dirty') options.allowDirty = true
+    else fail(`Unknown option: ${arg}`)
+  }
+  return options
 }
 
-const bump  = process.argv[2] ?? 'patch'
-const valid = ['patch', 'minor', 'major']
-if (!valid.includes(bump)) {
-  console.error(`❌ Geçersiz tip: ${bump}. patch / minor / major kullanın.`)
+function resolveNextVersion(current, bump) {
+  if (/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(bump)) return bump
+  const valid = new Set(['patch', 'minor', 'major'])
+  if (!valid.has(bump)) fail(`Invalid bump: ${bump}. Use patch, minor, major, or exact semver.`)
+  const [major, minor, patch] = current.split('.').map(Number)
+  if (![major, minor, patch].every(Number.isFinite)) fail(`Invalid package version: ${current}`)
+  if (bump === 'major') return `${major + 1}.0.0`
+  if (bump === 'minor') return `${major}.${minor + 1}.0`
+  return `${major}.${minor}.${patch + 1}`
+}
+
+function resolveNotes(options, currentVersion, nextVersion) {
+  if (options.notesFile) {
+    const full = path.resolve(root, options.notesFile)
+    if (!fs.existsSync(full)) fail(`Notes file not found: ${options.notesFile}`)
+    return fs.readFileSync(full, 'utf8')
+  }
+  if (options.notes) return options.notes
+
+  const previousTag = capture('git', ['describe', '--tags', '--abbrev=0'], { allowFail: true })
+  const range = previousTag ? `${previousTag}..HEAD` : ''
+  const log = capture('git', ['log', '--pretty=format:- %s', range].filter(Boolean), { allowFail: true })
+  return [
+    `DropMedia v${nextVersion}`,
+    '',
+    'Changes:',
+    log || `- Release from v${currentVersion} to v${nextVersion}`,
+    '',
+    'Validation required before publishing:',
+    '- npm run build',
+    '- npm run audit:package',
+    '- AppImage/deb smoke test'
+  ].join('\n')
+}
+
+function updateVersionFiles(version) {
+  const pkgPath = path.join(root, 'package.json')
+  const pkg = readJson(pkgPath)
+  pkg.version = version
+  fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`)
+
+  const lockPath = path.join(root, 'package-lock.json')
+  if (fs.existsSync(lockPath)) {
+    const lock = readJson(lockPath)
+    lock.version = version
+    if (lock.packages?.['']) lock.packages[''].version = version
+    fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`)
+  }
+}
+
+function collectReleaseFiles(version) {
+  if (!fs.existsSync(releaseDir)) return []
+  return fs.readdirSync(releaseDir)
+    .filter(file => {
+      if (file === 'latest-linux.yml') return true
+      if (!file.includes(version)) return false
+      return /\.(AppImage|deb|yml|yaml)$/i.test(file)
+    })
+    .map(file => path.join(releaseDir, file))
+    .filter(file => fs.statSync(file).isFile())
+}
+
+function assertCleanGit() {
+  const status = capture('git', ['status', '--porcelain'])
+  if (status) {
+    fail('Git worktree is dirty. Commit/stash changes first, or pass --allow-dirty intentionally.')
+  }
+}
+
+function assertCommand(command, args) {
+  const result = spawnSync(command, args, { cwd: root, stdio: 'ignore' })
+  if (result.status !== 0) fail(`Required command failed: ${command}`)
+}
+
+function run(command, args) {
+  const result = spawnSync(command, args, { cwd: root, stdio: 'inherit' })
+  if (result.status !== 0) fail(`Command failed: ${command} ${args.join(' ')}`)
+}
+
+function capture(command, args, opts = {}) {
+  const result = spawnSync(command, args, { cwd: root, encoding: 'utf8' })
+  if (result.status !== 0 && !opts.allowFail) fail(`Command failed: ${command} ${args.join(' ')}`)
+  return result.stdout.trim()
+}
+
+function readJson(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8'))
+}
+
+function fail(message) {
+  console.error(message)
   process.exit(1)
 }
 
-const pkgPath = path.join(__dirname, '../package.json')
-const pkg     = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
-
-const [major, minor, patch] = pkg.version.split('.').map(Number)
-const newVersion = bump === 'major'
-  ? `${major + 1}.0.0`
-  : bump === 'minor'
-  ? `${major}.${minor + 1}.0`
-  : `${major}.${minor}.${patch + 1}`
-
-console.log(`\n🚀 DropMedia ${pkg.version} → ${newVersion}\n`)
-
-// package.json güncelle
-pkg.version = newVersion
-fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
-console.log('✓ package.json güncellendi')
-
-// Build
-console.log('⚙️  Build alınıyor...')
-run('npx', ['electron-vite', 'build'])
-console.log('✓ Build tamamlandı')
-
-// Linux paketi
-console.log('📦 Linux paketi oluşturuluyor...')
-run('npx', ['electron-builder', '--linux'])
-console.log('✓ Paket oluşturuldu')
-
-// Git
-run('git', ['add', 'package.json'])
-run('git', ['commit', '-m', `chore: release v${newVersion}`])
-run('git', ['tag', `v${newVersion}`])
-run('git', ['push'])
-run('git', ['push', '--tags'])
-console.log('✓ GitHub\'a push edildi')
-
-// Release dosyaları
-const releaseDir = path.join(__dirname, '../release')
-const files = fs.readdirSync(releaseDir)
-  .filter(f => f.endsWith('.AppImage') || f.endsWith('.deb') || f.endsWith('.yml'))
-  .map(f => path.join(releaseDir, f))
-
-if (files.length === 0) {
-  console.warn('⚠️  Release klasöründe dosya bulunamadı')
-  process.exit(1)
-}
-
-// GitHub Release
-run('gh', [
-  'release', 'create', `v${newVersion}`,
-  ...files,
-  '--title', `DropMedia v${newVersion}`,
-  '--generate-notes'
-])
-
-console.log(`\n✅ DropMedia v${newVersion} yayınlandı!`)
-console.log(`   https://github.com/vengeance3355/DropMedia/releases/tag/v${newVersion}\n`)
+main()

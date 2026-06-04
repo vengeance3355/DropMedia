@@ -6,9 +6,9 @@ interface Props { onClose: () => void }
 const DEFAULTS: AppSettings = {
   downloadDir: '', theme: 'dark', maxConcurrentDownloads: 3, language: 'tr',
   ytDlpPath: '', autoUpdate: true, showNotifications: true, filenameTemplate: '%(title)s',
-  speedLimit: 0, completionSound: false, closeToTray: false, subtitles: false,
-  embedSubs: false, profiles: {}, cookieBrowser: 'auto', torEnabled: false,
-  clipboardWatch: false
+  speedLimit: 0, completionSound: false, closeToTray: false,
+  profiles: {}, cookieBrowser: 'auto', torEnabled: false,
+  clipboardWatch: false, fileDragBehavior: 'drag'
 }
 
 interface CookieSource {
@@ -198,7 +198,7 @@ export function Settings({ onClose }: Props) {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
 
-      <div className="relative w-full max-w-xl rounded-3xl bg-[#100c20] border border-white/10 shadow-2xl overflow-hidden animate-slide-up flex flex-col max-h-[85vh]">
+      <div className="relative w-full max-w-xl rounded-2xl bg-[#0F0F12] border border-white/[0.08] shadow-2xl overflow-hidden animate-slide-up flex flex-col max-h-[85vh]">
         {/* Başlık */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/8 shrink-0">
           <div>
@@ -238,7 +238,7 @@ export function Settings({ onClose }: Props) {
                 {(['dark','light'] as const).map(t => (
                   <button key={t} onClick={() => set('theme', t)}
                     className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-all
-                      ${settings.theme === t ? 'bg-gradient-button text-white' : 'bg-white/8 text-white/50 hover:bg-white/12 hover:text-white'}`}>
+                      ${settings.theme === t ? 'bg-violet-600 text-white' : 'bg-[#1E1E25] text-zinc-400 hover:bg-[#252530] hover:text-zinc-200'}`}>
                     {t === 'dark' ? '🌙 Koyu' : '☀️ Açık'}
                   </button>
                 ))}
@@ -250,8 +250,20 @@ export function Settings({ onClose }: Props) {
                 {[1,2,3,5].map(n => (
                   <button key={n} onClick={() => set('maxConcurrentDownloads', n)}
                     className={`w-12 h-10 rounded-xl text-sm font-semibold transition-all
-                      ${settings.maxConcurrentDownloads === n ? 'bg-gradient-button text-white' : 'bg-white/8 text-white/50 hover:bg-white/12 hover:text-white'}`}>
+                      ${settings.maxConcurrentDownloads === n ? 'bg-violet-600 text-white' : 'bg-[#1E1E25] text-zinc-400 hover:bg-[#252530] hover:text-zinc-200'}`}>
                     {n}
+                  </button>
+                ))}
+              </div>
+            </Section>
+
+            <Section title="Video butonuna basınca">
+              <div className="flex gap-2">
+                {([['drag', 'Sürükle'], ['copy', 'Videoyu Kopyala']] as const).map(([val, label]) => (
+                  <button key={val} onClick={() => set('fileDragBehavior', val)}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-all
+                      ${(settings.fileDragBehavior ?? 'drag') === val ? 'bg-violet-600 text-white' : 'bg-[#1E1E25] text-zinc-400 hover:bg-[#252530] hover:text-zinc-200'}`}>
+                    {label}
                   </button>
                 ))}
               </div>
@@ -280,13 +292,6 @@ export function Settings({ onClose }: Props) {
           </>}
 
           {tab === 'indirme' && <>
-            <Section title="Altyazı">
-              <div className="space-y-3">
-                <Toggle label="Altyazı indir (TR/EN)" checked={!!settings.subtitles} onChange={v => set('subtitles', v)} />
-                <Toggle label="Altyazıyı videoya göm (ffmpeg gerekli)" checked={!!settings.embedSubs} onChange={v => set('embedSubs', v)} />
-              </div>
-            </Section>
-
             <Section title="Hızlı Presetler">
               <div className="grid grid-cols-2 gap-2">
                 {[
@@ -345,7 +350,7 @@ export function Settings({ onClose }: Props) {
                 ].map(b => (
                   <button key={b.id || 'disabled'} onClick={() => setCookieBrowser(b.id)}
                     className={`px-3 py-1.5 rounded-xl text-xs font-medium capitalize transition-all
-                      ${(settings.cookieBrowser ?? 'auto') === b.id ? 'bg-gradient-button text-white' : 'bg-white/8 text-white/50 hover:bg-white/12 hover:text-white'}`}>
+                      ${(settings.cookieBrowser ?? 'auto') === b.id ? 'bg-violet-600 text-white' : 'bg-[#1E1E25] text-zinc-400 hover:bg-[#252530] hover:text-zinc-200'}`}>
                     {b.label}
                   </button>
                 ))}
@@ -446,7 +451,7 @@ export function Settings({ onClose }: Props) {
           <div className="flex justify-end gap-2 shrink-0">
           <button onClick={onClose} className="px-4 py-2 rounded-xl bg-white/6 hover:bg-white/10 text-white/60 text-sm font-medium transition-all">İptal</button>
           <button onClick={save}
-            className="px-5 py-2 rounded-xl bg-gradient-button text-white text-sm font-semibold hover:opacity-90 transition-all shadow-lg shadow-purple-500/20 flex items-center gap-2">
+            className="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 text-white text-sm font-semibold transition-all shadow-lg shadow-violet-500/20 flex items-center gap-2">
             {saved ? <><CheckIcon />Kaydedildi</> : 'Kaydet'}
           </button>
           </div>
@@ -481,7 +486,7 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
       <span className="text-white/60 text-sm group-hover:text-white/80 transition-colors">{label}</span>
       <span
         style={{ width: 40, height: 22 }}
-        className={`relative shrink-0 rounded-full transition-colors duration-200 ${checked ? 'bg-gradient-button' : 'bg-white/15'}`}
+        className={`relative shrink-0 rounded-full transition-colors duration-200 ${checked ? 'bg-violet-600' : 'bg-white/15'}`}
       >
         <span
           className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200"

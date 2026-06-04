@@ -45,6 +45,50 @@ interface LogsResponse {
   count?: number
 }
 
+interface ReleaseItem {
+  id: string
+  version: string
+  channel?: string
+  title?: string
+  notes?: string
+  github_tag?: string
+  appimage_url?: string
+  deb_url?: string
+  latest_yml_url?: string
+  mandatory?: boolean
+  published?: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+interface ReleasesResponse {
+  data?: ReleaseItem[]
+  count?: number
+}
+
+interface HealthDevice {
+  id: string
+  name: string
+  appVersion?: string
+  os?: string
+  ytdlpVersion?: string
+  ffmpeg?: boolean
+  lastSeen: string
+  errors24h: number
+  warnings24h: number
+  crashes24h: number
+}
+
+interface HealthResponse {
+  devices: HealthDevice[]
+  summary: {
+    devices: number
+    errors24h: number
+    warnings24h: number
+    crashes24h: number
+  }
+}
+
 const COLORS = ['#7c3aed','#3b82f6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6']
 const LOCAL_BRIDGES = ['http://127.0.0.1:17389', 'http://localhost:17389']
 type BridgeState = 'checking' | 'connected' | 'unavailable'
@@ -133,8 +177,10 @@ function uniqueBy<T>(items: T[], keyFn: (item: T) => string): T[] {
 export function DashboardClient() {
   const [stats, setStats]         = useState<StatsData | null>(null)
   const [logs, setLogs]           = useState<LogItem[]>([])
+  const [releases, setReleases]   = useState<ReleaseItem[]>([])
+  const [health, setHealth]       = useState<HealthResponse | null>(null)
   const [logCount, setLogCount]   = useState(0)
-  const [tab, setTab]             = useState<'overview' | 'logs' | 'devices'>('overview')
+  const [tab, setTab]             = useState<'overview' | 'logs' | 'devices' | 'releases' | 'health'>('overview')
   const [selectedDevice, setSelectedDevice] = useState<string | null>(null)
   const [expandedLog, setExpandedLog]       = useState<string | null>(null)
   const [logPage, setLogPage]     = useState(1)
@@ -151,11 +197,13 @@ export function DashboardClient() {
     const logsPath = `/api/logs?page=${logPage}${deviceQuery}`
 
     try {
-      const [remoteStats, remoteLogs, localStats, localLogs] = await Promise.all([
+      const [remoteStats, remoteLogs, localStats, localLogs, releaseRows, healthRows] = await Promise.all([
         fetchJson<StatsData>(statsPath),
         fetchJson<LogsResponse>(logsPath),
         fetchLocalJson<StatsData>(statsPath),
-        fetchLocalJson<LogsResponse>(logsPath)
+        fetchLocalJson<LogsResponse>(logsPath),
+        fetchJson<ReleasesResponse>('/api/releases'),
+        fetchJson<HealthResponse>('/api/health')
       ])
       setBridgeState(localStats || localLogs ? 'connected' : 'unavailable')
       const mergedStats = mergeStats(remoteStats, localStats)
@@ -163,6 +211,8 @@ export function DashboardClient() {
       setStats(mergedStats)
       setLogs(mergedLogs.data ?? [])
       setLogCount(mergedLogs.count ?? 0)
+      setReleases(releaseRows?.data ?? [])
+      setHealth(healthRows)
     } finally {
       setLoading(false)
     }
@@ -213,6 +263,16 @@ export function DashboardClient() {
     URL.revokeObjectURL(url)
   }
 
+  async function handleSaveRelease(input: Partial<ReleaseItem>) {
+    const res = await fetch('/api/releases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input)
+    })
+    if (!res.ok) throw new Error('Release kaydedilemedi')
+    await fetchData()
+  }
+
   return (
     <div className="min-h-screen">
       {/* Header */}
@@ -261,13 +321,17 @@ export function DashboardClient() {
         <main className="flex-1 overflow-y-auto p-6">
           {/* Tab'lar */}
           <div className="flex gap-1 mb-6">
-            {(['overview', 'logs', 'devices'] as const).map(t => (
+            {(['overview', 'logs', 'devices', 'releases', 'health'] as const).map(t => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
                 className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${tab === t ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'}`}
               >
-                {t === 'overview' ? 'Genel Bakış' : t === 'logs' ? `Loglar (${logCount})` : 'İstatistikler'}
+                {t === 'overview' ? 'Genel Bakış'
+                  : t === 'logs' ? `Loglar (${logCount})`
+                    : t === 'devices' ? 'İstatistikler'
+                      : t === 'releases' ? 'Release'
+                        : 'Sağlık'}
               </button>
             ))}
           </div>
@@ -291,8 +355,12 @@ export function DashboardClient() {
               onDeleteLog={handleDeleteLog} onDeleteAll={handleDeleteAll}
               onSaveLogs={handleSaveLogs}
             />
-          ) : (
+          ) : tab === 'devices' ? (
             <StatsTab stats={stats} />
+          ) : tab === 'releases' ? (
+            <ReleaseTab releases={releases} onSave={handleSaveRelease} />
+          ) : (
+            <HealthTab health={health} />
           )}
         </main>
       </div>
@@ -555,6 +623,159 @@ function StatsTab({ stats }: { stats: StatsData | null }) {
         <StatCard label="Toplam İndirme" value={stats?.total ?? 0} unit="" />
         <StatCard label="Toplam Veri" value={stats?.totalMb ?? 0} unit="MB" />
       </div>
+    </div>
+  )
+}
+
+function ReleaseTab({ releases, onSave }: { releases: ReleaseItem[]; onSave: (input: Partial<ReleaseItem>) => Promise<void> }) {
+  const [form, setForm] = useState<Partial<ReleaseItem>>({
+    channel: 'stable',
+    mandatory: false,
+    published: false
+  })
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+
+  async function save() {
+    if (!form.version?.trim()) {
+      setMessage('Version gerekli')
+      return
+    }
+    setSaving(true)
+    setMessage('')
+    try {
+      await onSave({
+        ...form,
+        github_tag: form.github_tag || `v${form.version.replace(/^v/i, '')}`
+      })
+      setForm({ channel: 'stable', mandatory: false, published: false })
+      setMessage('Release kaydedildi')
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Release kaydedilemedi')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
+      <div className="bg-white/5 border border-white/8 rounded-2xl p-5 h-fit space-y-3">
+        <h3 className="text-white/70 text-sm font-medium">Release Notu</h3>
+        <Input label="Version" value={form.version ?? ''} onChange={version => setForm(prev => ({ ...prev, version }))} placeholder="1.0.2" />
+        <Input label="Başlık" value={form.title ?? ''} onChange={title => setForm(prev => ({ ...prev, title }))} placeholder="DropMedia v1.0.2" />
+        <Input label="GitHub Tag" value={form.github_tag ?? ''} onChange={github_tag => setForm(prev => ({ ...prev, github_tag }))} placeholder="v1.0.2" />
+        <label className="block">
+          <span className="text-white/35 text-xs">Notlar</span>
+          <textarea
+            value={form.notes ?? ''}
+            onChange={e => setForm(prev => ({ ...prev, notes: e.target.value }))}
+            className="mt-1 w-full h-36 rounded-xl bg-white/5 border border-white/8 px-3 py-2 text-white text-sm outline-none focus:border-purple-500/40"
+            placeholder="- Yeni özellikler&#10;- Düzeltmeler&#10;- Bilinen riskler"
+          />
+        </label>
+        <div className="flex items-center gap-4 text-xs text-white/50">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!!form.published} onChange={e => setForm(prev => ({ ...prev, published: e.target.checked }))} /> Yayında</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!!form.mandatory} onChange={e => setForm(prev => ({ ...prev, mandatory: e.target.checked }))} /> Zorunlu</label>
+        </div>
+        {message && <p className="text-xs text-white/40">{message}</p>}
+        <button onClick={save} disabled={saving} className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-sm font-semibold">
+          {saving ? 'Kaydediliyor…' : 'Kaydet / Güncelle'}
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        {releases.map(release => (
+          <div key={release.id} className="bg-white/5 border border-white/8 rounded-2xl p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-white font-semibold">v{release.version}</h3>
+                  <span className="px-2 py-1 rounded-lg bg-white/8 text-white/40 text-[11px]">{release.channel ?? 'stable'}</span>
+                  {release.published && <span className="px-2 py-1 rounded-lg bg-green-500/15 text-green-300 text-[11px]">yayında</span>}
+                  {release.mandatory && <span className="px-2 py-1 rounded-lg bg-red-500/15 text-red-300 text-[11px]">zorunlu</span>}
+                </div>
+                <p className="text-white/45 text-sm mt-1">{release.title ?? `DropMedia v${release.version}`}</p>
+              </div>
+              <span className="text-white/25 text-xs">{release.created_at ? new Date(release.created_at).toLocaleString('tr') : ''}</span>
+            </div>
+            {release.notes && <pre className="mt-4 whitespace-pre-wrap rounded-xl bg-black/20 p-3 text-xs text-white/60">{release.notes}</pre>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {release.github_tag && <LinkPill href={`https://github.com/vengeance3355/DropMedia/releases/tag/${release.github_tag}`}>GitHub</LinkPill>}
+              {release.appimage_url && <LinkPill href={release.appimage_url}>AppImage</LinkPill>}
+              {release.deb_url && <LinkPill href={release.deb_url}>deb</LinkPill>}
+            </div>
+          </div>
+        ))}
+        {releases.length === 0 && <EmptyState message="Henüz release kaydı yok" />}
+      </div>
+    </div>
+  )
+}
+
+function HealthTab({ health }: { health: HealthResponse | null }) {
+  const devices = health?.devices ?? []
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-4 gap-4">
+        <StatCard label="Cihaz" value={health?.summary.devices ?? 0} unit="" />
+        <StatCard label="24s Hata" value={health?.summary.errors24h ?? 0} unit="" />
+        <StatCard label="24s Uyarı" value={health?.summary.warnings24h ?? 0} unit="" />
+        <StatCard label="24s Crash" value={health?.summary.crashes24h ?? 0} unit="" />
+      </div>
+      <div className="space-y-3">
+        {devices.map(device => (
+          <div key={device.id} className="bg-white/5 border border-white/8 rounded-2xl p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-white font-semibold">{device.name}</h3>
+                <p className="text-white/35 text-xs mt-1">{device.os ?? '-'} · App {device.appVersion ?? '-'} · yt-dlp {device.ytdlpVersion ?? '-'}</p>
+              </div>
+              <span className="text-white/30 text-xs">{new Date(device.lastSeen).toLocaleString('tr')}</span>
+            </div>
+            <div className="mt-4 grid grid-cols-4 gap-3 text-xs">
+              <HealthMetric label="ffmpeg" value={device.ffmpeg ? 'var' : 'yok'} tone={device.ffmpeg ? 'good' : 'bad'} />
+              <HealthMetric label="hata" value={device.errors24h} tone={device.errors24h ? 'bad' : 'good'} />
+              <HealthMetric label="uyarı" value={device.warnings24h} tone={device.warnings24h ? 'warn' : 'good'} />
+              <HealthMetric label="crash" value={device.crashes24h} tone={device.crashes24h ? 'bad' : 'good'} />
+            </div>
+          </div>
+        ))}
+        {devices.length === 0 && <EmptyState message="Cihaz sağlığı için veri yok" />}
+      </div>
+    </div>
+  )
+}
+
+function Input({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) {
+  return (
+    <label className="block">
+      <span className="text-white/35 text-xs">{label}</span>
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="mt-1 w-full rounded-xl bg-white/5 border border-white/8 px-3 py-2 text-white text-sm outline-none focus:border-purple-500/40"
+      />
+    </label>
+  )
+}
+
+function LinkPill({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className="px-2.5 py-1 rounded-lg bg-white/8 hover:bg-white/12 text-white/45 hover:text-white text-xs">
+      {children}
+    </a>
+  )
+}
+
+function HealthMetric({ label, value, tone }: { label: string; value: string | number; tone: 'good' | 'warn' | 'bad' }) {
+  const color = tone === 'good' ? 'text-green-300 bg-green-500/10'
+    : tone === 'warn' ? 'text-amber-300 bg-amber-500/10'
+      : 'text-red-300 bg-red-500/10'
+  return (
+    <div className={`rounded-xl px-3 py-2 ${color}`}>
+      <p className="opacity-60">{label}</p>
+      <p className="mt-1 font-semibold">{value}</p>
     </div>
   )
 }
