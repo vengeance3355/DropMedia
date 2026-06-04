@@ -19,6 +19,8 @@ interface SyncStatus {
   email?: string
   userId?: string
   error?: string
+  notice?: string
+  emailConfirmationRequired?: boolean
   health?: {
     ok: boolean
     status: 'ready' | 'misconfigured' | 'unreachable' | 'schema_missing'

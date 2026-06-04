@@ -6,6 +6,8 @@ const store = new Store()
 
 const SUPABASE_URL = process.env.SUPABASE_URL ?? ''
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? ''
+const AUTH_REDIRECT_URL = process.env.SUPABASE_AUTH_REDIRECT_URL
+  ?? 'https://admin-panel-xi-orpin.vercel.app/auth/callback'
 const SESSION_KEY = 'sync.session'
 const REQUIRED_TABLES = ['user_settings', 'download_library', 'watch_sources', 'watch_items', 'app_releases']
 const HEALTH_CACHE_MS = 60_000
@@ -27,6 +29,8 @@ interface SyncStatus {
   email?: string
   userId?: string
   error?: string
+  notice?: string
+  emailConfirmationRequired?: boolean
   health?: SyncHealth
 }
 
@@ -77,7 +81,15 @@ async function signUp(email: string, password: string): Promise<SyncStatus> {
   assertConfigured()
   assertCredentials(email, password)
   await assertSyncReachable()
-  const auth = await authRequest('/auth/v1/signup', { email, password })
+  const auth = await authRequest(`/auth/v1/signup?redirect_to=${encodeURIComponent(AUTH_REDIRECT_URL)}`, { email, password })
+  if (!auth.access_token && auth.user?.id) {
+    return {
+      ...await getSyncStatus(),
+      email: auth.user.email ?? email,
+      notice: 'Kayıt oluşturuldu. Giriş yapmadan önce e-posta onayını tamamlayın.',
+      emailConfirmationRequired: true
+    }
+  }
   if (!auth.access_token || !auth.user?.id) {
     throw new Error(authMessage(auth) || 'Kayıt oluşturulduysa e-posta onayı gerekebilir. Onaydan sonra giriş yapın.')
   }

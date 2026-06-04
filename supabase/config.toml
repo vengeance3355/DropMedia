@@ -1,0 +1,23 @@
+project_id = "dropmedia"
+
+[auth]
+site_url = "https://admin-panel-xi-orpin.vercel.app/auth/callback"
+additional_redirect_urls = [
+  "https://admin-panel-xi-orpin.vercel.app/auth/callback",
+  "https://admin-panel-*.vercel.app/auth/callback"
+]
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = true
+enable_confirmations = true
+double_confirm_changes = true
+secure_password_change = false
+max_frequency = "1m"
+otp_length = 8
+otp_expiry = 3600
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true

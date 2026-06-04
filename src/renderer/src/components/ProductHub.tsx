@@ -34,6 +34,8 @@ type SyncStatus = {
   email?: string
   userId?: string
   error?: string
+  notice?: string
+  emailConfirmationRequired?: boolean
   health?: {
     ok: boolean
     status: 'ready' | 'misconfigured' | 'unreachable' | 'schema_missing'
@@ -186,7 +188,7 @@ export function ProductHub({
     if (result) {
       setSyncStatus(result)
       setSyncPassword('')
-      setSyncMessage(mode === 'signin' ? 'Giriş yapıldı.' : 'Kayıt oluşturuldu ve giriş yapıldı.')
+      setSyncMessage(result.notice ?? (mode === 'signin' ? 'Giriş yapıldı.' : 'Kayıt oluşturuldu ve giriş yapıldı.'))
     }
   }
 
@@ -325,6 +327,9 @@ export function ProductHub({
                 </div>
               )}
               {syncMessage && <p className="text-xs text-emerald-300/80">{syncMessage}</p>}
+              {syncStatus.emailConfirmationRequired && (
+                <p className="text-xs text-amber-200/80">E-posta onayı tamamlanmadan giriş yapılamaz.</p>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2 lg:justify-end">
               <button onClick={refreshSyncStatus} disabled={busy['sync-status']} className="secondary-btn">Kontrol Et</button>
