@@ -28,7 +28,20 @@ interface Props {
 }
 
 export type ProductHubView = 'links' | 'watch' | 'library' | 'automation' | 'ai' | 'account'
-type SyncStatus = { configured: boolean; signedIn: boolean; email?: string; userId?: string; error?: string }
+type SyncStatus = {
+  configured: boolean
+  signedIn: boolean
+  email?: string
+  userId?: string
+  error?: string
+  health?: {
+    ok: boolean
+    status: 'ready' | 'misconfigured' | 'unreachable' | 'schema_missing'
+    message?: string
+    missingTables?: string[]
+    checkedAt: number
+  }
+}
 
 const VIEW_META: Record<ProductHubView, { title: string; description: string }> = {
   links: {
@@ -122,9 +135,22 @@ export function ProductHub({
   const newWatchItems = state.watchItems.filter(item => item.status === 'new').length
   const privateNeedsCookie = state.inbox.some(item => item.preflight?.needsCookies)
   const meta = VIEW_META[view]
+  const syncReady = syncStatus.configured && (syncStatus.health?.ok ?? true)
+  const syncAction = !syncStatus.configured
+    ? 'kapalı'
+    : syncStatus.signedIn
+      ? syncStatus.email
+      : syncStatus.health?.ok === false
+        ? syncStatus.health.status === 'schema_missing' ? 'schema eksik' : 'bağlantı yok'
+        : 'Supabase hazır'
 
   async function refresh() {
     setState(await window.api.getProductState())
+  }
+
+  async function refreshSyncStatus() {
+    const result = await run('sync-status', () => window.api.getSyncStatus())
+    if (result) setSyncStatus(result)
   }
 
   async function run<T>(key: string, fn: () => Promise<T>): Promise<T | undefined> {
@@ -266,9 +292,15 @@ export function ProductHub({
         <Metric label="AI" value={state.aiTools.filter(t => t.enabled).length} sub="opsiyonel local" />
       </div>
 
-      {view === 'account' && <Panel title="Hesap ve Sync" action={syncStatus.configured ? (syncStatus.signedIn ? syncStatus.email : 'Supabase hazır') : 'kapalı'}>
+      {view === 'account' && <Panel title="Hesap ve Sync" action={syncAction}>
         {syncStatus.configured ? (
-          <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+          <div className="space-y-3">
+            {syncStatus.health?.ok === false && (
+              <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                {syncStatus.health.message ?? syncStatus.error ?? 'Supabase bağlantısı doğrulanamadı.'}
+              </div>
+            )}
+            <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
             <div className="space-y-2">
               {syncStatus.signedIn ? (
                 <div>
@@ -295,19 +327,21 @@ export function ProductHub({
               {syncMessage && <p className="text-xs text-emerald-300/80">{syncMessage}</p>}
             </div>
             <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+              <button onClick={refreshSyncStatus} disabled={busy['sync-status']} className="secondary-btn">Kontrol Et</button>
               {syncStatus.signedIn ? (
                 <>
-                  <button onClick={syncPush} disabled={busy['sync-push']} className="primary-btn">Supabase'e Yedekle</button>
-                  <button onClick={syncPull} disabled={busy['sync-pull']} className="secondary-btn">Geri Yükle</button>
+                  <button onClick={syncPush} disabled={busy['sync-push'] || !syncReady} className="primary-btn">Supabase'e Yedekle</button>
+                  <button onClick={syncPull} disabled={busy['sync-pull'] || !syncReady} className="secondary-btn">Geri Yükle</button>
                   <button onClick={syncSignOut} className="danger-btn">Çıkış</button>
                 </>
               ) : (
                 <>
-                  <button onClick={() => syncAuth('signin')} disabled={busy['sync-signin']} className="primary-btn">Giriş</button>
-                  <button onClick={() => syncAuth('signup')} disabled={busy['sync-signup']} className="secondary-btn">Kayıt</button>
+                  <button onClick={() => syncAuth('signin')} disabled={busy['sync-signin'] || !syncReady} className="primary-btn">Giriş</button>
+                  <button onClick={() => syncAuth('signup')} disabled={busy['sync-signup'] || !syncReady} className="secondary-btn">Kayıt</button>
                 </>
               )}
             </div>
+          </div>
           </div>
         ) : (
           <p className="text-sm text-white/45">Supabase env yok. Sync, hesap ve cloud ayar yedekleme devre dışı.</p>

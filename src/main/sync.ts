@@ -7,6 +7,9 @@ const store = new Store()
 const SUPABASE_URL = process.env.SUPABASE_URL ?? ''
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? ''
 const SESSION_KEY = 'sync.session'
+const REQUIRED_TABLES = ['user_settings', 'download_library', 'watch_sources', 'watch_items', 'app_releases']
+const HEALTH_CACHE_MS = 60_000
+let healthCache: { checkedAt: number; health: SyncHealth } | null = null
 
 interface SyncSession {
   access_token: string
@@ -24,6 +27,15 @@ interface SyncStatus {
   email?: string
   userId?: string
   error?: string
+  health?: SyncHealth
+}
+
+interface SyncHealth {
+  ok: boolean
+  status: 'ready' | 'misconfigured' | 'unreachable' | 'schema_missing'
+  message?: string
+  missingTables?: string[]
+  checkedAt: number
 }
 
 interface AuthResponse {
@@ -48,19 +60,23 @@ export function setupSyncHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('sync-pull-product-state', () => pullProductState())
 }
 
-function getSyncStatus(): SyncStatus {
+async function getSyncStatus(): Promise<SyncStatus> {
   const session = readSession()
+  const health = await checkSyncHealth()
   return {
     configured: isConfigured(),
     signedIn: !!session,
     email: session?.user.email,
-    userId: session?.user.id
+    userId: session?.user.id,
+    error: health.ok ? undefined : health.message,
+    health
   }
 }
 
 async function signUp(email: string, password: string): Promise<SyncStatus> {
   assertConfigured()
   assertCredentials(email, password)
+  await assertSyncReachable()
   const auth = await authRequest('/auth/v1/signup', { email, password })
   if (!auth.access_token || !auth.user?.id) {
     throw new Error(authMessage(auth) || 'Kayıt oluşturulduysa e-posta onayı gerekebilir. Onaydan sonra giriş yapın.')
@@ -72,6 +88,7 @@ async function signUp(email: string, password: string): Promise<SyncStatus> {
 async function signIn(email: string, password: string): Promise<SyncStatus> {
   assertConfigured()
   assertCredentials(email, password)
+  await assertSyncReachable()
   const auth = await authRequest('/auth/v1/token?grant_type=password', { email, password })
   if (!auth.access_token || !auth.user?.id) throw new Error(authMessage(auth) || 'Giriş yapılamadı.')
   writeSession(toSession(auth))
@@ -93,6 +110,7 @@ async function signOut(): Promise<SyncStatus> {
 
 async function pushProductState(state: object): Promise<{ ok: true; syncedAt: number }> {
   const session = requireSession()
+  await assertSyncReachable()
   const syncedAt = Date.now()
   await restRequest('/rest/v1/user_settings', {
     method: 'POST',
@@ -110,6 +128,7 @@ async function pushProductState(state: object): Promise<{ ok: true; syncedAt: nu
 
 async function pullProductState(): Promise<{ data: unknown | null; syncedAt?: string }> {
   const session = requireSession()
+  await assertSyncReachable()
   const rows = await restRequest<Array<{ data: unknown; updated_at?: string }>>('/rest/v1/user_settings?namespace=eq.product_hub&select=data,updated_at&limit=1', {
     method: 'GET',
     token: session.access_token
@@ -126,6 +145,11 @@ function isConfigured(): boolean {
 
 function assertConfigured(): void {
   if (!isConfigured()) throw new Error('Supabase URL/anon key tanımlı değil. Sync kapalı.')
+}
+
+async function assertSyncReachable(): Promise<void> {
+  const health = await checkSyncHealth(true)
+  if (!health.ok) throw new Error(health.message || 'Supabase sync hazır değil.')
 }
 
 function assertCredentials(email: string, password: string): void {
@@ -192,6 +216,94 @@ async function restRequest<T>(path: string, opts: { method: 'GET' | 'POST'; body
     })
     req.on('error', err => reject(normalizeNetworkError(err)))
     if (opts.body) req.write(JSON.stringify(opts.body))
+    req.end()
+  })
+}
+
+async function checkSyncHealth(force = false): Promise<SyncHealth> {
+  const now = Date.now()
+  if (!force && healthCache && now - healthCache.checkedAt < HEALTH_CACHE_MS) return healthCache.health
+
+  let health: SyncHealth
+  if (!isConfigured()) {
+    health = {
+      ok: false,
+      status: 'misconfigured',
+      message: 'Supabase URL/anon key tanımlı değil. Sync kapalı.',
+      checkedAt: now
+    }
+  } else {
+    try {
+      const results = await Promise.all(REQUIRED_TABLES.map(async table => {
+        try {
+          await healthRequest(`/rest/v1/${table}?select=id&limit=1`)
+          return { table, ok: true }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          return {
+            table,
+            ok: false,
+            missing: /could not find the table|schema cache|PGRST205/i.test(message),
+            message
+          }
+        }
+      }))
+      const missingTables = results.filter(item => item.missing).map(item => item.table)
+      const failed = results.find(item => !item.ok && !item.missing)
+
+      if (missingTables.length) {
+        health = {
+          ok: false,
+          status: 'schema_missing',
+          message: `Supabase tabloları eksik: ${missingTables.join(', ')}. schema.sql tekrar çalıştırılmalı.`,
+          missingTables,
+          checkedAt: now
+        }
+      } else if (failed) {
+        health = {
+          ok: false,
+          status: 'unreachable',
+          message: failed.message || 'Supabase bağlantısı doğrulanamadı.',
+          checkedAt: now
+        }
+      } else {
+        health = { ok: true, status: 'ready', message: 'Supabase hazır.', checkedAt: now }
+      }
+    } catch (err) {
+      health = {
+        ok: false,
+        status: 'unreachable',
+        message: err instanceof Error ? err.message : 'Supabase bağlantısı doğrulanamadı.',
+        checkedAt: now
+      }
+    }
+  }
+
+  healthCache = { checkedAt: now, health }
+  return health
+}
+
+async function healthRequest(path: string): Promise<void> {
+  const { net } = await import('electron')
+  const url = `${SUPABASE_URL}${path}`
+
+  return await new Promise<void>((resolve, reject) => {
+    const req = net.request({ method: 'GET', url })
+    req.setHeader('apikey', SUPABASE_ANON_KEY)
+    req.setHeader('Authorization', `Bearer ${SUPABASE_ANON_KEY}`)
+
+    req.on('response', (res) => {
+      let raw = ''
+      res.on('data', chunk => { raw += chunk.toString() })
+      res.on('end', () => {
+        if ((res.statusCode ?? 0) >= 400) {
+          reject(new Error(parseError(raw) || `Supabase health HTTP ${res.statusCode}`))
+          return
+        }
+        resolve()
+      })
+    })
+    req.on('error', err => reject(normalizeNetworkError(err)))
     req.end()
   })
 }

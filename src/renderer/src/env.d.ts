@@ -13,6 +13,21 @@ import {
   WatchSource
 } from './types'
 
+interface SyncStatus {
+  configured: boolean
+  signedIn: boolean
+  email?: string
+  userId?: string
+  error?: string
+  health?: {
+    ok: boolean
+    status: 'ready' | 'misconfigured' | 'unreachable' | 'schema_missing'
+    message?: string
+    missingTables?: string[]
+    checkedAt: number
+  }
+}
+
 declare global {
   interface Window {
     api: {
@@ -86,10 +101,10 @@ declare global {
       offProductListeners:  () => void
 
       // Supabase sync
-      getSyncStatus:        () => Promise<{ configured: boolean; signedIn: boolean; email?: string; userId?: string; error?: string }>
-      signUpSync:           (email: string, password: string) => Promise<{ configured: boolean; signedIn: boolean; email?: string; userId?: string }>
-      signInSync:           (email: string, password: string) => Promise<{ configured: boolean; signedIn: boolean; email?: string; userId?: string }>
-      signOutSync:          () => Promise<{ configured: boolean; signedIn: boolean; email?: string; userId?: string }>
+      getSyncStatus:        () => Promise<SyncStatus>
+      signUpSync:           (email: string, password: string) => Promise<SyncStatus>
+      signInSync:           (email: string, password: string) => Promise<SyncStatus>
+      signOutSync:          () => Promise<SyncStatus>
       pushProductState:     (state: ProductHubState) => Promise<{ ok: true; syncedAt: number }>
       pullProductState:     () => Promise<{ data: Partial<ProductHubState> | null; syncedAt?: string }>
 
