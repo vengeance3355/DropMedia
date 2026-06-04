@@ -20,7 +20,8 @@ export default function LoginPage() {
     if (res.ok) {
       router.push('/dashboard')
     } else {
-      setError('Hatalı şifre')
+      const body = await res.json().catch(() => null)
+      setError(res.status === 503 ? (body?.error ?? 'Admin env eksik') : 'Hatalı şifre')
       setLoading(false)
     }
   }

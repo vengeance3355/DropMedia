@@ -4,8 +4,11 @@ import { authenticate, SESSION_TOKEN } from '@/lib/auth'
 
 export async function POST(req: NextRequest) {
   const { password } = await req.json()
-  const ok = await authenticate(password)
-  if (!ok) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const auth = await authenticate(password)
+  if (auth === 'missing_config') {
+    return NextResponse.json({ error: 'ADMIN_PASSWORD env tanımlı değil veya boş.' }, { status: 503 })
+  }
+  if (auth !== 'ok') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const res = NextResponse.json({ ok: true })
   res.cookies.set(SESSION_TOKEN, password, {

@@ -21,7 +21,7 @@ export async function GET() {
 
   let sb
   try { sb = getSupabase() } catch {
-    return NextResponse.json({ data: [], count: 0, source: 'none' })
+    return NextResponse.json(await getGithubReleaseFallback('none'))
   }
 
   const { data, count, error } = await sb
@@ -30,7 +30,7 @@ export async function GET() {
     .order('created_at', { ascending: false })
     .limit(50)
 
-  if (error) return NextResponse.json({ data: [], count: 0, source: 'error', error: error.message })
+  if (error) return NextResponse.json(await getGithubReleaseFallback('supabase_error', error.message))
   return NextResponse.json({ data: data ?? [], count: count ?? 0, source: 'supabase' })
 }
 
@@ -100,5 +100,62 @@ function normalizePayload(input: Partial<ReleasePayload>, patch = false): Partia
     ...(input.latest_yml_url !== undefined ? { latest_yml_url: input.latest_yml_url } : {}),
     ...(input.mandatory !== undefined ? { mandatory: !!input.mandatory } : {}),
     ...(input.published !== undefined ? { published: !!input.published } : {})
+  }
+}
+
+async function getGithubReleaseFallback(source: string, error?: string) {
+  try {
+    const res = await fetch('https://api.github.com/repos/vengeance3355/DropMedia/releases?per_page=20', {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'dropmedia-admin'
+      },
+      next: { revalidate: 60 }
+    })
+    if (!res.ok) throw new Error(`GitHub ${res.status}`)
+
+    const releases = await res.json() as Array<{
+      id: number
+      tag_name: string
+      name?: string
+      body?: string
+      prerelease?: boolean
+      draft?: boolean
+      published_at?: string
+      assets?: Array<{ name: string; browser_download_url: string }>
+    }>
+
+    const data = releases
+      .filter(release => !release.draft)
+      .map(release => {
+        const appImage = release.assets?.find(asset => asset.name.endsWith('.AppImage'))
+        const deb = release.assets?.find(asset => asset.name.endsWith('.deb'))
+        const latest = release.assets?.find(asset => asset.name === 'latest-linux.yml')
+        const version = release.tag_name.replace(/^v/i, '')
+
+        return {
+          id: `github-${release.id}`,
+          version,
+          channel: release.prerelease ? 'beta' : 'stable',
+          title: release.name ?? `DropMedia v${version}`,
+          notes: release.body ?? '',
+          github_tag: release.tag_name,
+          appimage_url: appImage?.browser_download_url,
+          deb_url: deb?.browser_download_url,
+          latest_yml_url: latest?.browser_download_url,
+          mandatory: false,
+          published: true,
+          created_at: release.published_at
+        }
+      })
+
+    return { data, count: data.length, source: `github_fallback:${source}`, error }
+  } catch (err) {
+    return {
+      data: [],
+      count: 0,
+      source,
+      error: error ?? (err instanceof Error ? err.message : 'GitHub release fallback okunamadı')
+    }
   }
 }
