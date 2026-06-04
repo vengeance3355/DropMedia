@@ -87,18 +87,10 @@ async function autoDiscover(currentEnv) {
     return { changed: shouldUpdate(currentEnv, values), source: 'vercel', values }
   }
 
-  const accessToken = currentEnv.SUPABASE_ACCESS_TOKEN || vercelEnv.SUPABASE_ACCESS_TOKEN
-  if (!accessToken) {
-    return {
-      changed: false,
-      source: 'none:no_supabase_access_token_and_vercel_env_empty',
-      values: {}
-    }
-  }
-
+  const accessToken = currentEnv.SUPABASE_ACCESS_TOKEN || vercelEnv.SUPABASE_ACCESS_TOKEN || ''
   const project = findProject(accessToken, currentEnv.SUPABASE_PROJECT_REF || currentEnv.SUPABASE_URL)
   if (!project?.id) {
-    return { changed: false, source: 'supabase:no_project_match', values: {} }
+    return { changed: false, source: accessToken ? 'supabase:no_project_match' : 'supabase_cli:not_logged_in_or_no_project_match', values: {} }
   }
 
   const keys = getProjectApiKeys(accessToken, project.id)
@@ -108,10 +100,11 @@ async function autoDiscover(currentEnv) {
 
   values.SUPABASE_PROJECT_REF = project.id
   values.SUPABASE_URL = `https://${project.id}.supabase.co`
+  values.NEXT_PUBLIC_SUPABASE_URL = values.SUPABASE_URL
   values.SUPABASE_ANON_KEY = anonKey
   if (serviceRoleKey) values.SUPABASE_SERVICE_ROLE_KEY = serviceRoleKey
 
-  return { changed: shouldUpdate(currentEnv, values), source: 'supabase_cli', values }
+  return { changed: shouldUpdate(currentEnv, values), source: accessToken ? 'supabase_access_token' : 'supabase_cli_profile', values }
 }
 
 function pullVercelEnv() {
@@ -155,15 +148,17 @@ function getProjectApiKeys(accessToken, projectRef) {
 }
 
 function runSupabaseJson(args, accessToken) {
+  const env = { ...process.env }
+  if (accessToken) env.SUPABASE_ACCESS_TOKEN = accessToken
   const result = spawnSync('npx', ['supabase@latest', ...args], {
     cwd: ROOT,
-    env: { ...process.env, SUPABASE_ACCESS_TOKEN: accessToken },
+    env,
     encoding: 'utf8',
     maxBuffer: 20 * 1024 * 1024
   })
   if (result.status !== 0) throw new Error(`Supabase CLI failed: ${(result.stderr || result.stdout).trim()}`)
   const raw = result.stdout.trim()
-  return raw ? JSON.parse(raw) : null
+  return raw ? JSON.parse(trimToJson(raw)) : null
 }
 
 function findApiKey(keys, role) {
@@ -172,6 +167,14 @@ function findApiKey(keys, role) {
     return text.includes(role)
   })
   return item?.api_key || item?.key || item?.value
+}
+
+function trimToJson(raw) {
+  const arrayIndex = raw.indexOf('[')
+  const objectIndex = raw.indexOf('{')
+  const indexes = [arrayIndex, objectIndex].filter(index => index >= 0)
+  if (!indexes.length) return raw
+  return raw.slice(Math.min(...indexes))
 }
 
 function normalizeProject(project) {
@@ -259,7 +262,7 @@ function readProcessEnv() {
 
 function writeEnv(path, env) {
   const existing = existsSync(path) ? readFileSync(path, 'utf8').split('\n') : []
-  const managed = new Set(['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PROJECT_REF'])
+  const managed = new Set(['SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PROJECT_REF'])
   const seen = new Set()
   const lines = existing.map(line => {
     const index = line.indexOf('=')
