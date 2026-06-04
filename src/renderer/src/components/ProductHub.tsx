@@ -8,13 +8,23 @@ import type {
   WatchItem,
   WatchSource
 } from '../types'
-import { detectPlatform, formatDuration } from '../utils/platform'
+import { formatDuration } from '../utils/platform'
+import { DownloadQueue } from './DownloadQueue'
 
 interface Props {
   view: ProductHubView
   historyItems: DownloadItem[]
   onUseUrl: (url: string) => void
   onOpenSettings: () => void
+  onCancel: (id: string) => void
+  onPause: (id: string) => void
+  onResume: (item: DownloadItem) => void
+  onRedownload: (item: DownloadItem) => void
+  onRemove: (id: string) => void
+  onClearCompleted: () => void
+  onShowItemInFolder: (item: DownloadItem) => void
+  onConvertDone?: (id: string, newPath: string) => void
+  onRepairMediaMetadata?: (id: string) => Promise<void>
 }
 
 export type ProductHubView = 'links' | 'watch' | 'library' | 'automation' | 'ai' | 'account'
@@ -57,7 +67,21 @@ const EMPTY: ProductHubState = {
   aiTools: []
 }
 
-export function ProductHub({ view, historyItems, onUseUrl, onOpenSettings }: Props) {
+export function ProductHub({
+  view,
+  historyItems,
+  onUseUrl,
+  onOpenSettings,
+  onCancel,
+  onPause,
+  onResume,
+  onRedownload,
+  onRemove,
+  onClearCompleted,
+  onShowItemInFolder,
+  onConvertDone,
+  onRepairMediaMetadata
+}: Props) {
   const [state, setState] = useState<ProductHubState>(EMPTY)
   const [bulkUrls, setBulkUrls] = useState('')
   const [watchUrl, setWatchUrl] = useState('')
@@ -461,25 +485,21 @@ export function ProductHub({ view, historyItems, onUseUrl, onOpenSettings }: Pro
           </div>
         </Panel>}
 
-      {view === 'library' && <Panel title="Kütüphane" action={`${completed.length} tamamlanan`}>
-        <div className="grid gap-2 md:grid-cols-2">
-          {completed.slice(0, 8).map(item => (
-            <div key={item.id} className="flex items-center gap-3 rounded-xl border border-white/8 bg-white/[0.03] p-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-500/15 text-xs font-semibold text-violet-100">
-                {detectPlatform(item.url).name.slice(0, 2)}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm text-white/80">{item.videoInfo?.title ?? item.url}</p>
-                <p className="truncate text-xs text-white/35">{item.outputPath ?? item.outputDir ?? item.selectedFormat}</p>
-              </div>
-              {item.outputPath && (
-                <button onClick={() => window.api.showItemInFolder(item.outputPath!)} className="secondary-btn">Aç</button>
-              )}
-            </div>
-          ))}
-          {completed.length === 0 && <Empty text="Tamamlanan indirmeler kütüphane görünümünde listelenir." />}
-        </div>
-      </Panel>}
+      {view === 'library' && (
+        <DownloadQueue
+          items={historyItems}
+          onCancel={onCancel}
+          onPause={onPause}
+          onResume={onResume}
+          onRedownload={onRedownload}
+          onRemove={onRemove}
+          onClearCompleted={onClearCompleted}
+          onShowItemInFolder={onShowItemInFolder}
+          onConvertDone={onConvertDone}
+          onUrlDrop={onUseUrl}
+          onRepairMediaMetadata={onRepairMediaMetadata}
+        />
+      )}
     </div>
   )
 }

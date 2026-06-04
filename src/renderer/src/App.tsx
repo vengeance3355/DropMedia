@@ -456,6 +456,15 @@ export default function App() {
                     historyItems={historyItems}
                     onUseUrl={handleDetectedUrl}
                     onOpenSettings={() => setSettingsOpen(true)}
+                    onCancel={handleCancel}
+                    onPause={handlePause}
+                    onResume={handleResume}
+                    onRedownload={handleRedownload}
+                    onRemove={removeItem}
+                    onClearCompleted={clearCompleted}
+                    onShowItemInFolder={handleShowItemInFolder}
+                    onConvertDone={handleConvertDone}
+                    onRepairMediaMetadata={handleRepairMediaMetadata}
                   />
                 )}
                 {activeTab === 'history' && (

@@ -40,19 +40,21 @@ ALTER TABLE error_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stats ENABLE ROW LEVEL SECURITY;
 
 -- Sadece insert izni (uygulama sadece yazabilir, okuyamaz)
+DROP POLICY IF EXISTS "app_insert_errors" ON error_logs;
 CREATE POLICY "app_insert_errors" ON error_logs
   FOR INSERT WITH CHECK (TRUE);
 
+DROP POLICY IF EXISTS "app_insert_stats" ON stats;
 CREATE POLICY "app_insert_stats" ON stats
   FOR INSERT WITH CHECK (TRUE);
 
 -- Index'ler (dashboard sorguları için)
-CREATE INDEX idx_errors_device   ON error_logs(device_id);
-CREATE INDEX idx_errors_created  ON error_logs(created_at DESC);
-CREATE INDEX idx_errors_type     ON error_logs(error_type);
-CREATE INDEX idx_stats_device    ON stats(device_id);
-CREATE INDEX idx_stats_created   ON stats(created_at DESC);
-CREATE INDEX idx_stats_platform  ON stats(platform);
+CREATE INDEX IF NOT EXISTS idx_errors_device   ON error_logs(device_id);
+CREATE INDEX IF NOT EXISTS idx_errors_created  ON error_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_errors_type     ON error_logs(error_type);
+CREATE INDEX IF NOT EXISTS idx_stats_device    ON stats(device_id);
+CREATE INDEX IF NOT EXISTS idx_stats_created   ON stats(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stats_platform  ON stats(platform);
 
 -- Kullanıcı sync ayarları: Supabase Auth kullanır.
 CREATE TABLE IF NOT EXISTS user_settings (
@@ -155,9 +157,9 @@ CREATE POLICY "watch_items_owner_all" ON watch_items
 
 -- app_releases service_role ile admin panelden yönetilir; public okuma açılmadı.
 
-CREATE INDEX idx_user_settings_user ON user_settings(user_id);
-CREATE INDEX idx_library_user       ON download_library(user_id);
-CREATE INDEX idx_watch_sources_user ON watch_sources(user_id);
-CREATE INDEX idx_watch_items_user   ON watch_items(user_id);
-CREATE INDEX idx_releases_version   ON app_releases(version);
-CREATE INDEX idx_releases_created   ON app_releases(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id);
+CREATE INDEX IF NOT EXISTS idx_library_user       ON download_library(user_id);
+CREATE INDEX IF NOT EXISTS idx_watch_sources_user ON watch_sources(user_id);
+CREATE INDEX IF NOT EXISTS idx_watch_items_user   ON watch_items(user_id);
+CREATE INDEX IF NOT EXISTS idx_releases_version   ON app_releases(version);
+CREATE INDEX IF NOT EXISTS idx_releases_created   ON app_releases(created_at DESC);
