@@ -190,10 +190,24 @@ async function restRequest<T>(path: string, opts: { method: 'GET' | 'POST'; body
         }
       })
     })
-    req.on('error', err => reject(err))
+    req.on('error', err => reject(normalizeNetworkError(err)))
     if (opts.body) req.write(JSON.stringify(opts.body))
     req.end()
   })
+}
+
+function normalizeNetworkError(error: Error): Error {
+  const message = error.message || ''
+  if (message.includes('ERR_NAME_NOT_RESOLVED')) {
+    return new Error('Supabase adresi çözümlenemedi. .env içindeki SUPABASE_URL doğru proje URLi olmalı ve DNS/internet erişimi çalışmalı.')
+  }
+  if (message.includes('ERR_INTERNET_DISCONNECTED')) {
+    return new Error('İnternet bağlantısı yok. Hesap ve cloud sync için bağlantı gerekiyor.')
+  }
+  if (message.includes('ERR_CONNECTION_TIMED_OUT') || message.includes('ERR_CONNECTION_RESET')) {
+    return new Error('Supabase bağlantısı zaman aşımına uğradı. İnternet, DNS veya güvenlik duvarını kontrol edin.')
+  }
+  return error
 }
 
 function parseError(raw: string): string {
