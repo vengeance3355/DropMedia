@@ -1,0 +1,90 @@
+name: DropMedia Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump; exact version is used when version is set"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: "Exact semver version, optional"
+        required: false
+        type: string
+      notes:
+        description: "Release notes, optional"
+        required: false
+        type: string
+      draft:
+        description: "Create GitHub release as draft"
+        required: true
+        default: false
+        type: boolean
+      prerelease:
+        description: "Mark as prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dropmedia-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools rpm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure git
+        run: |
+          git config user.name "dropmedia-release-bot"
+          git config user.email "dropmedia-release-bot@users.noreply.github.com"
+
+      - name: Build and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          TARGET="${{ inputs.version }}"
+          if [ -z "$TARGET" ]; then
+            TARGET="${{ inputs.bump }}"
+          fi
+
+          ARGS=("$TARGET" "--allow-dirty")
+          if [ -n "$RELEASE_NOTES" ]; then
+            NOTES_FILE="/tmp/dropmedia-release-notes.md"
+            printf '%s\n' "$RELEASE_NOTES" > "$NOTES_FILE"
+            ARGS+=("--notes-file" "$NOTES_FILE")
+          fi
+          if [ "${{ inputs.draft }}" = "true" ]; then
+            ARGS+=("--draft")
+          fi
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            ARGS+=("--prerelease")
+          fi
+
+          node scripts/release.js "${ARGS[@]}"
