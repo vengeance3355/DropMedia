@@ -22,7 +22,9 @@
   },
   "dependencies": {
     "electron-store": "^8.2.0",
-    "electron-updater": "^6.3.9"
+    "electron-updater": "^6.3.9",
+    "framer-motion": "^12.40.0",
+    "lucide-react": "^1.17.0"
   },
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",
@@ -42,7 +44,7 @@
     "typescript": "^5.7.2",
     "vite": "^5.4.11"
   },
-    "build": {
+  "build": {
     "appId": "com.dropmedia.app",
     "productName": "DropMedia",
     "directories": {

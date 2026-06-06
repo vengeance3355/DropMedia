@@ -4,7 +4,10 @@ const path = require('path')
 const asar = require('@electron/asar')
 
 const root = path.resolve(__dirname, '..')
-const asarPath = path.join(root, 'release/linux-unpacked/resources/app.asar')
+const asarPath = [
+  path.join(root, 'release/linux-unpacked/resources/app.asar'),
+  path.join(root, 'release/win-unpacked/resources/app.asar')
+].find(file => fs.existsSync(file))
 
 const blockedRoots = new Set([
   '.env',
@@ -41,8 +44,8 @@ function fail(message, details) {
   process.exit(1)
 }
 
-if (!fs.existsSync(asarPath)) {
-  fail(`missing asar at ${asarPath}`)
+if (!asarPath) {
+  fail('missing packaged app.asar in release/linux-unpacked or release/win-unpacked')
 }
 
 const files = asar.listPackage(asarPath)

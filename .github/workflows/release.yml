@@ -40,7 +40,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,9 +52,6 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y libarchive-tools rpm
-
       - name: Install dependencies
         run: npm ci
 
@@ -64,6 +61,7 @@ jobs:
           git config user.email "dropmedia-release-bot@users.noreply.github.com"
 
       - name: Build and publish release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_NOTES: ${{ inputs.notes }}

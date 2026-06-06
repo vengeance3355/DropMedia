@@ -43,7 +43,8 @@ function main() {
   updateVersionFiles(nextVersion)
 
   run('npm', ['run', 'build'])
-  run('npx', ['electron-builder', '--linux', '--publish', 'never'])
+  const target = process.platform === 'win32' ? '--win' : '--linux'
+  run('npx', ['electron-builder', target, '--publish', 'never'])
   run('npm', ['run', 'audit:package'])
 
   const files = collectReleaseFiles(nextVersion)
@@ -98,7 +99,7 @@ function parseArgs(args) {
 }
 
 function resolveNextVersion(current, bump) {
-  if (/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(bump)) return bump
+  if (isValidSemver(bump)) return bump
   const valid = new Set(['patch', 'minor', 'major'])
   if (!valid.has(bump)) fail(`Invalid bump: ${bump}. Use patch, minor, major, or exact semver.`)
   const [major, minor, patch] = current.split('.').map(Number)
@@ -106,6 +107,10 @@ function resolveNextVersion(current, bump) {
   if (bump === 'major') return `${major + 1}.0.0`
   if (bump === 'minor') return `${major}.${minor + 1}.0`
   return `${major}.${minor}.${patch + 1}`
+}
+
+function isValidSemver(value) {
+  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/.test(value)
 }
 
 function resolveNotes(options, currentVersion, nextVersion) {
@@ -151,9 +156,9 @@ function collectReleaseFiles(version) {
   if (!fs.existsSync(releaseDir)) return []
   return fs.readdirSync(releaseDir)
     .filter(file => {
-      if (file === 'latest-linux.yml') return true
+      if (file === 'latest.yml' || file === 'latest-linux.yml') return true
       if (!file.includes(version)) return false
-      return /\.(AppImage|deb|yml|yaml)$/i.test(file)
+      return /\.(AppImage|deb|exe|blockmap|yml|yaml)$/i.test(file)
     })
     .map(file => path.join(releaseDir, file))
     .filter(file => fs.statSync(file).isFile())
