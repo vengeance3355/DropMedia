@@ -172,24 +172,26 @@ function assertCleanGit() {
 }
 
 function assertCommand(command, args) {
-  const result = spawnSync(resolveCommand(command), args, { cwd: root, stdio: 'ignore' })
+  const result = spawn(command, args, { cwd: root, stdio: 'ignore' })
   if (result.status !== 0) fail(`Required command failed: ${command}`)
 }
 
 function run(command, args) {
-  const result = spawnSync(resolveCommand(command), args, { cwd: root, stdio: 'inherit' })
+  const result = spawn(command, args, { cwd: root, stdio: 'inherit' })
   if (result.status !== 0) fail(`Command failed: ${command} ${args.join(' ')}`)
 }
 
 function capture(command, args, opts = {}) {
-  const result = spawnSync(resolveCommand(command), args, { cwd: root, encoding: 'utf8' })
+  const result = spawn(command, args, { cwd: root, encoding: 'utf8' })
   if (result.status !== 0 && !opts.allowFail) fail(`Command failed: ${command} ${args.join(' ')}`)
   return result.stdout.trim()
 }
 
-function resolveCommand(command) {
-  if (process.platform === 'win32' && (command === 'npm' || command === 'npx')) return `${command}.cmd`
-  return command
+function spawn(command, args, options) {
+  if (process.platform === 'win32' && (command === 'npm' || command === 'npx')) {
+    return spawnSync('cmd.exe', ['/d', '/s', '/c', `${command}.cmd ${args.join(' ')}`], options)
+  }
+  return spawnSync(command, args, options)
 }
 
 function readJson(file) {
