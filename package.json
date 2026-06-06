@@ -1,6 +1,6 @@
 {
   "name": "drop-media",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "description": "Çoklu platform video indirme aracı",
   "main": "out/main/index.js",
   "author": "DropMedia",
