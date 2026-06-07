@@ -65,12 +65,12 @@ export function UpdateBanner() {
   if (status.type === 'downloaded') {
     return (
       <Banner color="green" onDismiss={() => setDismissed(true)}>
-        <span className="text-white/80 text-xs">Güncelleme hazır — yeniden başlatılacak</span>
+        <span className="text-white/80 text-xs">Güncelleme indirildi — kurmak için onay bekliyor</span>
         <button
           onClick={() => window.api.installUpdate()}
           className="ml-3 px-3 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-medium transition-all"
         >
-          Şimdi Kur
+          Kur ve Yeniden Başlat
         </button>
       </Banner>
     )
@@ -89,9 +89,9 @@ export function UpdateBanner() {
 
 function extractReleaseNotes(info?: Record<string, unknown>): string {
   const notes = info?.releaseNotes
-  if (typeof notes === 'string') return notes.slice(0, 1200)
+  if (typeof notes === 'string') return cleanReleaseNotes(notes)
   if (Array.isArray(notes)) {
-    return notes
+    const combined = notes
       .map(item => {
         if (typeof item === 'string') return item
         if (item && typeof item === 'object' && 'note' in item) return String((item as { note?: unknown }).note ?? '')
@@ -99,9 +99,32 @@ function extractReleaseNotes(info?: Record<string, unknown>): string {
       })
       .filter(Boolean)
       .join('\n')
-      .slice(0, 1200)
+    return cleanReleaseNotes(combined)
   }
   return ''
+}
+
+function cleanReleaseNotes(value: string): string {
+  return decodeHtmlEntities(value)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '- ')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<\/h[1-6]>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(line => line.trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 1200)
+}
+
+function decodeHtmlEntities(value: string): string {
+  const element = document.createElement('textarea')
+  element.innerHTML = value
+  return element.value
 }
 
 function Banner({

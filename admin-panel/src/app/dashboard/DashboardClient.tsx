@@ -54,7 +54,10 @@ interface ReleaseItem {
   github_tag?: string
   appimage_url?: string
   deb_url?: string
+  windows_exe_url?: string
+  windows_blockmap_url?: string
   latest_yml_url?: string
+  asset_names?: string[]
   mandatory?: boolean
   published?: boolean
   created_at?: string
@@ -64,6 +67,45 @@ interface ReleaseItem {
 interface ReleasesResponse {
   data?: ReleaseItem[]
   count?: number
+}
+
+interface ReleaseRun {
+  id: number
+  run_number?: number
+  name?: string
+  display_title?: string
+  status: string
+  conclusion?: string | null
+  event?: string
+  head_branch?: string
+  head_sha?: string
+  html_url?: string
+  created_at?: string
+  updated_at?: string
+  run_started_at?: string
+}
+
+interface ReleaseRunsResponse {
+  data?: ReleaseRun[]
+  count?: number
+  error?: string
+}
+
+interface ReleasePublishInput {
+  bump: 'patch' | 'minor' | 'major'
+  version?: string
+  notes?: string
+  draft?: boolean
+  prerelease?: boolean
+  ref?: string
+}
+
+interface ReleasePublishResult {
+  ok?: boolean
+  workflow?: string
+  ref?: string
+  target?: string
+  runs_url?: string
 }
 
 interface HealthDevice {
@@ -91,6 +133,7 @@ interface HealthResponse {
 
 const COLORS = ['#7c3aed','#3b82f6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6']
 const LOCAL_BRIDGES = ['http://127.0.0.1:17389', 'http://localhost:17389']
+const RELEASE_BASE_VERSION = '1.0.0'
 type BridgeState = 'checking' | 'connected' | 'unavailable'
 
 function emptyStats(): StatsData {
@@ -154,14 +197,23 @@ function mergeStats(remote: StatsData | null, local: StatsData | null): StatsDat
 function mergeLogs(remote: LogsResponse | null, local: LogsResponse | null): LogsResponse {
   const items = uniqueBy(
     [...(remote?.data ?? []), ...(local?.data ?? [])]
+      .filter(item => !isRoutineAiGeneralLog(item))
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
     item => `${item.created_at}|${item.device_id}|${item.error_type}|${item.error_message}|${item.url ?? ''}`
   )
 
   return {
     data: items.slice(0, 50),
-    count: Math.max(items.length, (remote?.count ?? 0) + (local?.count ?? 0))
+    count: items.length
   }
+}
+
+function isRoutineAiGeneralLog(log: LogItem): boolean {
+  if (log.error_type !== 'general') return false
+  const text = `${log.error_message ?? ''}\n${log.stack_trace ?? ''}`
+  if (!/"subsystem"\s*:\s*"ai"/i.test(text)) return false
+  if (/İşlem tamamlanamadı|hata|error|failed|timeout|zaman aşım/i.test(log.error_message ?? '')) return false
+  return /^AI (işi|komutu|benchmark|model|runtime|paketi|kurulumu|kaldırma|Python|Ollama)/i.test(log.error_message ?? '')
 }
 
 function uniqueBy<T>(items: T[], keyFn: (item: T) => string): T[] {
@@ -178,6 +230,7 @@ export function DashboardClient() {
   const [stats, setStats]         = useState<StatsData | null>(null)
   const [logs, setLogs]           = useState<LogItem[]>([])
   const [releases, setReleases]   = useState<ReleaseItem[]>([])
+  const [releaseRuns, setReleaseRuns] = useState<ReleaseRun[]>([])
   const [health, setHealth]       = useState<HealthResponse | null>(null)
   const [logCount, setLogCount]   = useState(0)
   const [tab, setTab]             = useState<'overview' | 'logs' | 'devices' | 'releases' | 'health'>('overview')
@@ -197,12 +250,13 @@ export function DashboardClient() {
     const logsPath = `/api/logs?page=${logPage}${deviceQuery}`
 
     try {
-      const [remoteStats, remoteLogs, localStats, localLogs, releaseRows, healthRows] = await Promise.all([
+      const [remoteStats, remoteLogs, localStats, localLogs, releaseRows, releaseRunRows, healthRows] = await Promise.all([
         fetchJson<StatsData>(statsPath),
         fetchJson<LogsResponse>(logsPath),
         fetchLocalJson<StatsData>(statsPath),
         fetchLocalJson<LogsResponse>(logsPath),
         fetchJson<ReleasesResponse>('/api/releases'),
+        fetchJson<ReleaseRunsResponse>('/api/releases/runs'),
         fetchJson<HealthResponse>('/api/health')
       ])
       setBridgeState(localStats || localLogs ? 'connected' : 'unavailable')
@@ -212,6 +266,7 @@ export function DashboardClient() {
       setLogs(mergedLogs.data ?? [])
       setLogCount(mergedLogs.count ?? 0)
       setReleases(releaseRows?.data ?? [])
+      setReleaseRuns(releaseRunRows?.data ?? [])
       setHealth(healthRows)
     } finally {
       setLoading(false)
@@ -271,6 +326,20 @@ export function DashboardClient() {
     })
     if (!res.ok) throw new Error('Release kaydedilemedi')
     await fetchData()
+  }
+
+  async function handlePublishRelease(input: ReleasePublishInput): Promise<ReleasePublishResult> {
+    const res = await fetch('/api/releases/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input)
+    })
+    const body = await res.json().catch(() => null) as ReleasePublishResult & { error?: string } | null
+    if (!res.ok) {
+      throw new Error(body?.error ?? 'Release workflow tetiklenemedi')
+    }
+    await fetchData()
+    return body ?? { ok: true }
   }
 
   return (
@@ -358,7 +427,7 @@ export function DashboardClient() {
           ) : tab === 'devices' ? (
             <StatsTab stats={stats} />
           ) : tab === 'releases' ? (
-            <ReleaseTab releases={releases} onSave={handleSaveRelease} />
+            <ReleaseTab releases={releases} releaseRuns={releaseRuns} onSave={handleSaveRelease} onPublish={handlePublishRelease} />
           ) : (
             <HealthTab health={health} />
           )}
@@ -547,6 +616,7 @@ function LogsTab({ logs, logCount, logPage, setLogPage, expandedLog, setExpanded
               log.error_type === 'download_ok'  ? 'bg-green-500/20 text-green-400' :
               log.error_type === 'warning'      ? 'bg-amber-500/20 text-amber-400' :
               log.error_type === 'app_open'     ? 'bg-purple-500/20 text-purple-400' :
+              log.error_type === 'general'       ? 'bg-blue-500/20 text-blue-300' :
               log.error_type === 'clipboard' || log.error_type === 'settings' ? 'bg-blue-500/20 text-blue-400' :
               'bg-white/10 text-white/50'
             }`}>{log.error_type}</span>
@@ -627,14 +697,84 @@ function StatsTab({ stats }: { stats: StatsData | null }) {
   )
 }
 
-function ReleaseTab({ releases, onSave }: { releases: ReleaseItem[]; onSave: (input: Partial<ReleaseItem>) => Promise<void> }) {
+function getLatestStableVersion(releases: ReleaseItem[]): string | null {
+  const versions = releases
+    .filter(release => (release.channel ?? 'stable') === 'stable')
+    .map(release => release.version)
+    .filter(version => parseVersion(version))
+    .sort(compareVersions)
+  return versions.at(-1) ?? null
+}
+
+function bumpVersion(version: string, bump: ReleasePublishInput['bump']): string {
+  const parsed = parseVersion(version) ?? [1, 0, 0]
+  const [major, minor, patch] = parsed
+  if (bump === 'major') return `${major + 1}.0.0`
+  if (bump === 'minor') return `${major}.${minor + 1}.0`
+  return `${major}.${minor}.${patch + 1}`
+}
+
+function compareVersions(a: string, b: string): number {
+  const left = parseVersion(a) ?? [0, 0, 0]
+  const right = parseVersion(b) ?? [0, 0, 0]
+  for (let i = 0; i < 3; i += 1) {
+    if (left[i] !== right[i]) return left[i] - right[i]
+  }
+  return 0
+}
+
+function parseVersion(version: string): [number, number, number] | null {
+  const match = version.replace(/^v/i, '').match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null
+}
+
+function shortSha(value?: string): string {
+  return value ? value.slice(0, 7) : '-'
+}
+
+function runLabel(run: ReleaseRun): string {
+  if (run.status !== 'completed') return run.status === 'in_progress' ? 'calisiyor' : run.status
+  if (run.conclusion === 'success') return 'basarili'
+  if (run.conclusion === 'cancelled') return 'iptal'
+  return run.conclusion ?? 'bitti'
+}
+
+function runTone(run: ReleaseRun): string {
+  if (run.status !== 'completed') return 'bg-blue-500/15 text-blue-300'
+  if (run.conclusion === 'success') return 'bg-green-500/15 text-green-300'
+  if (run.conclusion === 'cancelled') return 'bg-white/8 text-white/40'
+  return 'bg-red-500/15 text-red-300'
+}
+
+function isWindowsReleaseReady(release: ReleaseItem): boolean {
+  return !!release.windows_exe_url && !!release.windows_blockmap_url && !!release.latest_yml_url
+}
+
+function ReleaseTab({ releases, releaseRuns, onSave, onPublish }: {
+  releases: ReleaseItem[]
+  releaseRuns: ReleaseRun[]
+  onSave: (input: Partial<ReleaseItem>) => Promise<void>
+  onPublish: (input: ReleasePublishInput) => Promise<ReleasePublishResult>
+}) {
   const [form, setForm] = useState<Partial<ReleaseItem>>({
     channel: 'stable',
     mandatory: false,
     published: false
   })
+  const [publishForm, setPublishForm] = useState<ReleasePublishInput>({
+    bump: 'patch',
+    version: '',
+    notes: '',
+    draft: false,
+    prerelease: false,
+    ref: 'main'
+  })
   const [saving, setSaving] = useState(false)
+  const [publishing, setPublishing] = useState(false)
   const [message, setMessage] = useState('')
+  const [publishMessage, setPublishMessage] = useState('')
+  const latestVersion = getLatestStableVersion(releases)
+  const recommendedVersion = bumpVersion(latestVersion ?? RELEASE_BASE_VERSION, publishForm.bump)
 
   async function save() {
     if (!form.version?.trim()) {
@@ -657,13 +797,101 @@ function ReleaseTab({ releases, onSave }: { releases: ReleaseItem[]; onSave: (in
     }
   }
 
+  async function publish() {
+    const target = publishForm.version?.trim() || `${publishForm.bump} bump`
+    const ok = window.confirm(`GitHub release workflow başlatılacak.\n\nHedef: ${target}\nBranch/ref: ${publishForm.ref?.trim() || 'main'}\n\nBu işlem GitHub tarafında build ve release sürecini başlatır. Devam edilsin mi?`)
+    if (!ok) return
+
+    setPublishing(true)
+    setPublishMessage('')
+    try {
+      const result = await onPublish({
+        ...publishForm,
+        version: publishForm.version?.trim() || undefined,
+        notes: publishForm.notes?.trim() || undefined,
+        ref: publishForm.ref?.trim() || 'main'
+      })
+      setPublishMessage(`Workflow tetiklendi: ${result.target ?? target}. Son durum listesi birazdan guncellenir.`)
+    } catch (err) {
+      setPublishMessage(err instanceof Error ? err.message : 'Release workflow tetiklenemedi')
+    } finally {
+      setPublishing(false)
+    }
+  }
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
+    <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
+      <div className="space-y-4">
+      <div className="bg-white/5 border border-white/8 rounded-2xl p-5 h-fit space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-white/70 text-sm font-medium">Yeni Sürüm Yayınla</h3>
+            <p className="text-white/35 text-xs mt-1">GitHub Actions paketleri üretir, tag açar ve GitHub Release'e yükler.</p>
+          </div>
+          <span className="px-2 py-1 rounded-lg bg-purple-500/15 text-purple-300 text-[11px]">CI</span>
+        </div>
+        <label className="block">
+          <span className="text-white/35 text-xs">Bump</span>
+          <select
+            value={publishForm.bump}
+            onChange={e => setPublishForm(prev => ({ ...prev, bump: e.target.value as ReleasePublishInput['bump'] }))}
+            className="mt-1 w-full rounded-xl bg-white/5 border border-white/8 px-3 py-2 text-white text-sm outline-none focus:border-purple-500/40"
+          >
+            <option value="patch">patch</option>
+            <option value="minor">minor</option>
+            <option value="major">major</option>
+          </select>
+        </label>
+        <div className="rounded-xl bg-black/20 border border-white/8 px-3 py-2 text-xs text-white/45">
+          Base: v{RELEASE_BASE_VERSION} · Son surum: {latestVersion ? `v${latestVersion}` : '-'} · Tavsiye edilen: v{recommendedVersion}
+        </div>
+        <Input label="Exact Version (opsiyonel)" value={publishForm.version ?? ''} onChange={version => setPublishForm(prev => ({ ...prev, version }))} placeholder={recommendedVersion} />
+        <Input label="Branch / Ref" value={publishForm.ref ?? 'main'} onChange={ref => setPublishForm(prev => ({ ...prev, ref }))} placeholder="main" />
+        <label className="block">
+          <span className="text-white/35 text-xs">Release Notları</span>
+          <textarea
+            value={publishForm.notes ?? ''}
+            onChange={e => setPublishForm(prev => ({ ...prev, notes: e.target.value }))}
+            className="mt-1 w-full h-28 rounded-xl bg-white/5 border border-white/8 px-3 py-2 text-white text-sm outline-none focus:border-purple-500/40"
+            placeholder="Boş bırakılırsa git log'dan otomatik not üretilir."
+          />
+        </label>
+        <div className="flex items-center gap-4 text-xs text-white/50">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!!publishForm.draft} onChange={e => setPublishForm(prev => ({ ...prev, draft: e.target.checked }))} /> Draft</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!!publishForm.prerelease} onChange={e => setPublishForm(prev => ({ ...prev, prerelease: e.target.checked }))} /> Prerelease</label>
+        </div>
+        {publishMessage && <p className="text-xs text-white/40">{publishMessage}</p>}
+        <button onClick={publish} disabled={publishing} className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-semibold">
+          {publishing ? 'Tetikleniyor…' : 'GitHub Release Workflow Başlat'}
+        </button>
+        <div className="rounded-xl bg-black/20 border border-white/8 p-3">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <p className="text-white/60 text-xs font-medium">Publish loglari</p>
+            <a href="https://github.com/vengeance3355/DropMedia/actions/workflows/release.yml" target="_blank" rel="noreferrer" className="text-blue-300/80 hover:text-blue-200 text-xs">Actions</a>
+          </div>
+          <div className="space-y-2">
+            {releaseRuns.slice(0, 6).map(run => (
+              <div key={run.id} className="flex items-center justify-between gap-3 text-xs">
+                <div className="min-w-0">
+                  <p className="text-white/55 truncate">#{run.run_number ?? run.id} · {run.head_branch ?? '-'} · {shortSha(run.head_sha)}</p>
+                  <p className="text-white/25">{run.created_at ? new Date(run.created_at).toLocaleString('tr') : ''}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className={`px-2 py-1 rounded-lg ${runTone(run)} text-[11px]`}>{runLabel(run)}</span>
+                  {run.html_url && <LinkPill href={run.html_url}>log</LinkPill>}
+                </div>
+              </div>
+            ))}
+            {releaseRuns.length === 0 && <p className="text-white/25 text-xs">Workflow kaydi okunamadi veya henuz yok.</p>}
+          </div>
+        </div>
+      </div>
+
       <div className="bg-white/5 border border-white/8 rounded-2xl p-5 h-fit space-y-3">
         <h3 className="text-white/70 text-sm font-medium">Release Notu</h3>
-        <Input label="Version" value={form.version ?? ''} onChange={version => setForm(prev => ({ ...prev, version }))} placeholder="1.0.2" />
-        <Input label="Başlık" value={form.title ?? ''} onChange={title => setForm(prev => ({ ...prev, title }))} placeholder="DropMedia v1.0.2" />
-        <Input label="GitHub Tag" value={form.github_tag ?? ''} onChange={github_tag => setForm(prev => ({ ...prev, github_tag }))} placeholder="v1.0.2" />
+        <Input label="Version" value={form.version ?? ''} onChange={version => setForm(prev => ({ ...prev, version }))} placeholder={RELEASE_BASE_VERSION} />
+        <Input label="Başlık" value={form.title ?? ''} onChange={title => setForm(prev => ({ ...prev, title }))} placeholder={`DropMedia v${RELEASE_BASE_VERSION}`} />
+        <Input label="GitHub Tag" value={form.github_tag ?? ''} onChange={github_tag => setForm(prev => ({ ...prev, github_tag }))} placeholder={`v${RELEASE_BASE_VERSION}`} />
         <label className="block">
           <span className="text-white/35 text-xs">Notlar</span>
           <textarea
@@ -682,17 +910,21 @@ function ReleaseTab({ releases, onSave }: { releases: ReleaseItem[]; onSave: (in
           {saving ? 'Kaydediliyor…' : 'Kaydet / Güncelle'}
         </button>
       </div>
+      </div>
 
       <div className="space-y-3">
         {releases.map(release => (
           <div key={release.id} className="bg-white/5 border border-white/8 rounded-2xl p-5">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-white font-semibold">v{release.version}</h3>
                   <span className="px-2 py-1 rounded-lg bg-white/8 text-white/40 text-[11px]">{release.channel ?? 'stable'}</span>
                   {release.published && <span className="px-2 py-1 rounded-lg bg-green-500/15 text-green-300 text-[11px]">yayında</span>}
                   {release.mandatory && <span className="px-2 py-1 rounded-lg bg-red-500/15 text-red-300 text-[11px]">zorunlu</span>}
+                  <span className={`px-2 py-1 rounded-lg ${isWindowsReleaseReady(release) ? 'bg-green-500/15 text-green-300' : 'bg-amber-500/15 text-amber-300'} text-[11px]`}>
+                    {isWindowsReleaseReady(release) ? 'windows updater hazir' : 'windows asset eksik'}
+                  </span>
                 </div>
                 <p className="text-white/45 text-sm mt-1">{release.title ?? `DropMedia v${release.version}`}</p>
               </div>
@@ -701,9 +933,15 @@ function ReleaseTab({ releases, onSave }: { releases: ReleaseItem[]; onSave: (in
             {release.notes && <pre className="mt-4 whitespace-pre-wrap rounded-xl bg-black/20 p-3 text-xs text-white/60">{release.notes}</pre>}
             <div className="mt-3 flex flex-wrap gap-2">
               {release.github_tag && <LinkPill href={`https://github.com/vengeance3355/DropMedia/releases/tag/${release.github_tag}`}>GitHub</LinkPill>}
+              {release.windows_exe_url && <LinkPill href={release.windows_exe_url}>Windows Installer</LinkPill>}
+              {release.windows_blockmap_url && <LinkPill href={release.windows_blockmap_url}>blockmap</LinkPill>}
+              {release.latest_yml_url && <LinkPill href={release.latest_yml_url}>latest.yml</LinkPill>}
               {release.appimage_url && <LinkPill href={release.appimage_url}>AppImage</LinkPill>}
               {release.deb_url && <LinkPill href={release.deb_url}>deb</LinkPill>}
             </div>
+            {release.asset_names?.length ? (
+              <p className="mt-3 text-[11px] text-white/25 break-all">Assets: {release.asset_names.join(', ')}</p>
+            ) : null}
           </div>
         ))}
         {releases.length === 0 && <EmptyState message="Henüz release kaydı yok" />}

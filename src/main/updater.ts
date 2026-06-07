@@ -4,7 +4,7 @@ import { is } from '@electron-toolkit/utils'
 
 export function setupUpdater(window: BrowserWindow): void {
   autoUpdater.autoDownload = false
-  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.autoInstallOnAppQuit = false
 
   const send = (data: object) => window.webContents.send('update-status', data)
 

@@ -11,7 +11,10 @@ interface ReleasePayload {
   github_tag?: string
   appimage_url?: string
   deb_url?: string
+  windows_exe_url?: string
+  windows_blockmap_url?: string
   latest_yml_url?: string
+  asset_names?: string[]
   mandatory?: boolean
   published?: boolean
 }
@@ -24,14 +27,21 @@ export async function GET() {
     return NextResponse.json(await getGithubReleaseFallback('none'))
   }
 
-  const { data, count, error } = await sb
+  const { data: rows, count, error } = await sb
     .from('app_releases')
     .select('*', { count: 'exact' })
     .order('created_at', { ascending: false })
     .limit(50)
 
   if (error) return NextResponse.json(await getGithubReleaseFallback('supabase_error', error.message))
-  return NextResponse.json({ data: data ?? [], count: count ?? 0, source: 'supabase' })
+  const github = await getGithubReleaseFallback('supabase_merge')
+  const merged = github.data.length ? mergeReleaseRows(rows ?? [], github.data) : (rows ?? [])
+  return NextResponse.json({
+    data: merged,
+    count: merged.length || count || 0,
+    source: github.data.length ? 'supabase+github' : 'supabase',
+    error: github.data.length ? undefined : github.error
+  })
 }
 
 export async function POST(req: NextRequest) {
@@ -130,7 +140,9 @@ async function getGithubReleaseFallback(source: string, error?: string) {
       .map(release => {
         const appImage = release.assets?.find(asset => asset.name.endsWith('.AppImage'))
         const deb = release.assets?.find(asset => asset.name.endsWith('.deb'))
-        const latest = release.assets?.find(asset => asset.name === 'latest-linux.yml')
+        const winExe = release.assets?.find(asset => /\.exe$/i.test(asset.name))
+        const winBlockmap = release.assets?.find(asset => /\.exe\.blockmap$/i.test(asset.name))
+        const latest = release.assets?.find(asset => asset.name === 'latest.yml' || asset.name === 'latest-linux.yml')
         const version = release.tag_name.replace(/^v/i, '')
 
         return {
@@ -142,7 +154,10 @@ async function getGithubReleaseFallback(source: string, error?: string) {
           github_tag: release.tag_name,
           appimage_url: appImage?.browser_download_url,
           deb_url: deb?.browser_download_url,
+          windows_exe_url: winExe?.browser_download_url,
+          windows_blockmap_url: winBlockmap?.browser_download_url,
           latest_yml_url: latest?.browser_download_url,
+          asset_names: release.assets?.map(asset => asset.name) ?? [],
           mandatory: false,
           published: true,
           created_at: release.published_at
@@ -158,4 +173,24 @@ async function getGithubReleaseFallback(source: string, error?: string) {
       error: error ?? (err instanceof Error ? err.message : 'GitHub release fallback okunamadı')
     }
   }
+}
+
+function mergeReleaseRows(supabaseRows: Array<Record<string, any>>, githubRows: Array<Record<string, any>>) {
+  const githubByVersion = new Map(githubRows.map(row => [String(row.version ?? '').replace(/^v/i, ''), row]))
+  const merged = supabaseRows.map(row => {
+    const version = String(row.version ?? '').replace(/^v/i, '')
+    const github = githubByVersion.get(version)
+    if (!github) return row
+    githubByVersion.delete(version)
+    return {
+      ...github,
+      ...row,
+      windows_exe_url: github.windows_exe_url,
+      windows_blockmap_url: github.windows_blockmap_url,
+      latest_yml_url: github.latest_yml_url ?? row.latest_yml_url,
+      asset_names: github.asset_names
+    }
+  })
+
+  return [...merged, ...githubByVersion.values()]
 }
