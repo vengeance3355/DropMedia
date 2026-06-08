@@ -79,8 +79,12 @@ function main() {
   // 6. "stable" tagʼını bu commitʼe taşı
   moveStableTag()
 
-  // 7. GitHub "stable" releaseʼıni güncelle
-  publishStableRelease(newBody)
+  // 7. version.json hazırla
+  const versionJsonPath = path.join(notesDir, 'version.json')
+  fs.writeFileSync(versionJsonPath, JSON.stringify({ version: next, notes: versionNotes }, null, 2))
+
+  // 8. GitHub "stable" releaseʼıni güncelle
+  publishStableRelease(newBody, versionJsonPath)
 
   console.log(`\n✓ Release tamamlandı`)
   console.log(`  Versiyon : ${next}`)
@@ -98,7 +102,7 @@ function moveStableTag() {
   run('git', ['push', 'origin', STABLE_TAG])
 }
 
-function publishStableRelease(body) {
+function publishStableRelease(body, versionJsonPath) {
   // "stable" release var mı kontrol et
   const check = spawnSync('gh', ['release', 'view', STABLE_TAG], {
     cwd: root, encoding: 'utf8'
@@ -112,10 +116,15 @@ function publishStableRelease(body) {
       '--title', RELEASE_TITLE,
       '--notes', body
     ])
-    // Asset'i değiştir
+    // Asset'leri değiştir
     run('gh', [
       'release', 'upload', STABLE_TAG,
       installerExe,
+      '--clobber'
+    ])
+    run('gh', [
+      'release', 'upload', STABLE_TAG,
+      versionJsonPath,
       '--clobber'
     ])
   } else {
@@ -125,7 +134,8 @@ function publishStableRelease(body) {
       'release', 'create', STABLE_TAG,
       '--title', RELEASE_TITLE,
       '--notes', body,
-      installerExe
+      installerExe,
+      versionJsonPath
     ])
   }
 }

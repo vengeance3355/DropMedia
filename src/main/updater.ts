@@ -13,7 +13,8 @@ import { spawn } from 'child_process'
 import { is } from '@electron-toolkit/utils'
 import { logError } from './logger'
 
-const GITHUB_API = 'https://api.github.com/repos/vengeance3355/DropMedia/releases/latest'
+const VERSION_URL   = 'https://github.com/vengeance3355/DropMedia/releases/download/stable/version.json'
+const RELEASE_API   = 'https://api.github.com/repos/vengeance3355/DropMedia/releases/tags/stable'
 
 interface ReleaseInfo {
   version: string
@@ -42,18 +43,23 @@ function httpsGetJson(url: string): Promise<unknown> {
 
 async function fetchLatestRelease(): Promise<ReleaseInfo | null> {
   try {
-    const release = await httpsGetJson(GITHUB_API) as Record<string, unknown>
-    const latestVersion = (release.tag_name as string).replace(/^v/, '')
+    // Versiyon karşılaştırması version.json'dan — tag_name 'stable' olduğundan kullanmıyoruz
+    const verData = await httpsGetJson(VERSION_URL) as Record<string, unknown>
+    const latestVersion = String(verData.version || '')
+    if (!latestVersion) return null
+
     const currentVersion = app.getVersion()
     if (latestVersion === currentVersion) return null
 
+    // Installer URL için release assets
+    const release = await httpsGetJson(RELEASE_API) as Record<string, unknown>
     const assets = release.assets as Array<Record<string, unknown>>
     const installerAsset = assets.find(a => a.name === 'DropMedia-Installer.exe')
     if (!installerAsset) return null
 
     return {
       version: latestVersion,
-      notes: (release.body as string) || '',
+      notes: String(verData.notes || ''),
       installerUrl: installerAsset.browser_download_url as string
     }
   } catch {
