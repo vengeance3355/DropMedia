@@ -201,7 +201,7 @@ function capture(cmd, args, opts = {}) {
 
 function spawnSyncCompat(cmd, args, opts) {
   if (process.platform === 'win32' && (cmd === 'npm' || cmd === 'npx')) {
-    return spawnSync('cmd.exe', ['/d', '/s', '/c', `${cmd}.cmd ${args.join(' ')}`], opts)
+    return spawnSync(cmd, args, { ...opts, shell: true })
   }
   return spawnSync(cmd, args, opts)
 }
