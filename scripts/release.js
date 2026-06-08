@@ -1,140 +1,166 @@
 #!/usr/bin/env node
 /*
- * DropMedia release helper.
+ * DropMedia release helper
  *
- * Usage:
- *   node scripts/release.js patch --notes-file release-notes/v1.0.2.md
- *   node scripts/release.js 1.2.0 --notes "Release notes"
- *   node scripts/release.js patch --dry-run
+ * GitHub'da TEK bir "stable" release tutulur.
+ * Her yeni versiyonda:
+ *   - Asset (DropMedia-Installer.exe) güncellenir
+ *   - Release body'ye yeni versiyon bölümü eklenir
+ *
+ * Kullanım:
+ *   node scripts/release.js [patch|minor|major|1.2.3] [seçenekler]
+ *
+ * Seçenekler:
+ *   --notes "metin"          Versiyon notları (inline)
+ *   --notes-file dosya.md    Versiyon notları (dosyadan)
+ *   --dry-run                Sadece ne yapılacağını göster
+ *   --allow-dirty            Kirli git worktree'ye izin ver
  */
 
 const { spawnSync } = require('child_process')
-const fs = require('fs')
+const fs   = require('fs')
 const path = require('path')
 
-const root = path.resolve(__dirname, '..')
-const releaseDir = path.join(root, 'release')
-const notesDir = path.join(root, 'release-notes')
+const root         = path.resolve(__dirname, '..')
+const notesDir     = path.join(root, 'release-notes')
+const bodyFile     = path.join(notesDir, 'RELEASE_BODY.md')
+const installerExe = path.join(root, 'installer', 'release', 'DropMedia-Installer.exe')
+
+const STABLE_TAG   = 'stable'
+const RELEASE_TITLE = 'DropMedia'
+
+// ── Giriş noktası ─────────────────────────────────────────────────────────────
 
 function main() {
   const options = parseArgs(process.argv.slice(2))
-  const pkgPath = path.join(root, 'package.json')
-  const pkg = readJson(pkgPath)
-  const currentVersion = pkg.version
-  const nextVersion = resolveNextVersion(currentVersion, options.bump)
-  const tag = `v${nextVersion}`
+  const pkg     = readJson(path.join(root, 'package.json'))
+  const current = pkg.version
+  const next    = resolveNextVersion(current, options.bump)
+  const gitTag  = `v${next}`
 
   if (!options.allowDirty) assertCleanGit()
   assertCommand('gh', ['--version'])
   assertCommand('git', ['--version'])
 
-  const notes = resolveNotes(options, currentVersion, nextVersion)
-  const notesPath = path.join(notesDir, `${tag}.md`)
+  console.log(`\nDropMedia release  ${current} → ${next}`)
 
-  console.log(`DropMedia release ${currentVersion} -> ${nextVersion}`)
-  console.log(`Notes: ${path.relative(root, notesPath)}`)
   if (options.dryRun) {
-    console.log('Dry run: no files changed, no build, no upload.')
+    console.log('Dry run: hiçbir şey değiştirilmedi.')
+    console.log(`  git tag  : ${gitTag}`)
+    console.log(`  gh tag   : ${STABLE_TAG}  (güncellenir)`)
     return
   }
 
-  fs.mkdirSync(notesDir, { recursive: true })
-  fs.writeFileSync(notesPath, notes.endsWith('\n') ? notes : `${notes}\n`)
-  updateVersionFiles(nextVersion)
+  // 1. Versiyon notlarını hazırla
+  const versionNotes = resolveVersionNotes(options, current, next)
 
-  run('npm', ['run', 'build'])
-  const target = process.platform === 'win32' ? '--win' : '--linux'
-  run('npx', ['electron-builder', target, '--publish', 'never'])
+  // 2. RELEASE_BODY.md'ye ekle
+  const newBody = appendVersionToBody(next, versionNotes)
+  fs.writeFileSync(bodyFile, newBody)
+
+  // 3. package.json / package-lock.json güncelle
+  updateVersionFiles(next)
+
+  // 4. Build
   run('npm', ['run', 'audit:package'])
+  run('node', ['scripts/build-installer.js'])
 
-  const files = collectReleaseFiles(nextVersion)
-  if (files.length === 0) fail(`No release files found for ${nextVersion}`)
+  if (!fs.existsSync(installerExe)) {
+    fail(`Installer bulunamadı: ${installerExe}`)
+  }
 
-  run('git', ['add', 'package.json', 'package-lock.json', path.relative(root, notesPath)])
-  run('git', ['commit', '-m', `chore: release ${tag}`])
-  run('git', ['tag', tag])
+  // 5. Git commit + push (versiyon tagʼı sadece local)
+  run('git', ['add', 'package.json', 'package-lock.json',
+               path.relative(root, bodyFile)])
+  run('git', ['commit', '-m', `chore: release ${gitTag}`])
+  run('git', ['tag', gitTag])   // local takip için
   run('git', ['push'])
-  run('git', ['push', 'origin', tag])
 
-  const ghArgs = [
-    'release', 'create', tag,
-    ...files,
-    '--title', `DropMedia ${tag}`,
-    '--notes-file', notesPath
-  ]
-  if (options.draft) ghArgs.push('--draft')
-  if (options.prerelease) ghArgs.push('--prerelease')
-  run('gh', ghArgs)
+  // 6. "stable" tagʼını bu commitʼe taşı
+  moveStableTag()
 
-  console.log(`Release uploaded: https://github.com/vengeance3355/DropMedia/releases/tag/${tag}`)
-  console.log('Evidence:')
-  console.log(`- version=${nextVersion}`)
-  console.log(`- files=${files.map(file => path.basename(file)).join(', ')}`)
-  console.log('- audit=passed')
+  // 7. GitHub "stable" releaseʼıni güncelle
+  publishStableRelease(newBody)
+
+  console.log(`\n✓ Release tamamlandı`)
+  console.log(`  Versiyon : ${next}`)
+  console.log(`  Git tag  : ${gitTag}`)
+  console.log(`  Release  : https://github.com/vengeance3355/DropMedia/releases/tag/${STABLE_TAG}`)
 }
 
-function parseArgs(args) {
-  const options = {
-    bump: 'patch',
-    notes: '',
-    notesFile: '',
-    dryRun: false,
-    draft: false,
-    prerelease: false,
-    allowDirty: false
+// ── Yardımcılar ───────────────────────────────────────────────────────────────
+
+function moveStableTag() {
+  // Eski "stable" tag'ini sil (local + remote), yenisini oluştur
+  spawnSync('git', ['tag', '-d', STABLE_TAG], { cwd: root })
+  spawnSync('git', ['push', 'origin', `:refs/tags/${STABLE_TAG}`], { cwd: root })
+  run('git', ['tag', STABLE_TAG])
+  run('git', ['push', 'origin', STABLE_TAG])
+}
+
+function publishStableRelease(body) {
+  // "stable" release var mı kontrol et
+  const check = spawnSync('gh', ['release', 'view', STABLE_TAG], {
+    cwd: root, encoding: 'utf8'
+  })
+
+  if (check.status === 0) {
+    // Mevcut release'i güncelle
+    console.log('Mevcut "stable" release güncelleniyor...')
+    run('gh', [
+      'release', 'edit', STABLE_TAG,
+      '--title', RELEASE_TITLE,
+      '--notes', body
+    ])
+    // Asset'i değiştir
+    run('gh', [
+      'release', 'upload', STABLE_TAG,
+      installerExe,
+      '--clobber'
+    ])
+  } else {
+    // İlk kez oluştur
+    console.log('"stable" release oluşturuluyor...')
+    run('gh', [
+      'release', 'create', STABLE_TAG,
+      '--title', RELEASE_TITLE,
+      '--notes', body,
+      installerExe
+    ])
   }
-
-  if (args[0] && !args[0].startsWith('--')) options.bump = args.shift()
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]
-    if (arg === '--notes') options.notes = args[++i] ?? ''
-    else if (arg === '--notes-file') options.notesFile = args[++i] ?? ''
-    else if (arg === '--dry-run') options.dryRun = true
-    else if (arg === '--draft') options.draft = true
-    else if (arg === '--prerelease') options.prerelease = true
-    else if (arg === '--allow-dirty') options.allowDirty = true
-    else fail(`Unknown option: ${arg}`)
-  }
-  return options
 }
 
-function resolveNextVersion(current, bump) {
-  if (isValidSemver(bump)) return bump
-  const valid = new Set(['patch', 'minor', 'major'])
-  if (!valid.has(bump)) fail(`Invalid bump: ${bump}. Use patch, minor, major, or exact semver.`)
-  const [major, minor, patch] = current.split('.').map(Number)
-  if (![major, minor, patch].every(Number.isFinite)) fail(`Invalid package version: ${current}`)
-  if (bump === 'major') return `${major + 1}.0.0`
-  if (bump === 'minor') return `${major}.${minor + 1}.0`
-  return `${major}.${minor}.${patch + 1}`
+function appendVersionToBody(version, notes) {
+  let body = fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, 'utf8').trimEnd() : defaultBody()
+  const section = `\n\n---\n\n# ${version}\n${notes.trim()}`
+  return body + section + '\n'
 }
 
-function isValidSemver(value) {
-  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/.test(value)
+function defaultBody() {
+  return [
+    '## DropMedia',
+    '',
+    'YouTube, Instagram, Twitter ve daha fazlasından video ve ses indirme uygulaması. ' +
+    'yt-dlp + ffmpeg tabanlı altyapısıyla çoklu platform desteği, format/kalite seçimi, ' +
+    'indirme kuyruğu yönetimi, otomatik pano algılama, çerez tabanlı özel içerik indirme, ' +
+    'medya dönüştürme, altyazı çıkarma ve mini mod sunar. Windows için tasarlanmış, ' +
+    'Electron tabanlı modern arayüz.'
+  ].join('\n')
 }
 
-function resolveNotes(options, currentVersion, nextVersion) {
+function resolveVersionNotes(options, currentVersion, nextVersion) {
   if (options.notesFile) {
     const full = path.resolve(root, options.notesFile)
-    if (!fs.existsSync(full)) fail(`Notes file not found: ${options.notesFile}`)
-    return fs.readFileSync(full, 'utf8')
+    if (!fs.existsSync(full)) fail(`Notlar dosyası bulunamadı: ${options.notesFile}`)
+    return fs.readFileSync(full, 'utf8').trim()
   }
-  if (options.notes) return options.notes
+  if (options.notes) return options.notes.trim()
 
-  const previousTag = capture('git', ['describe', '--tags', '--abbrev=0'], { allowFail: true })
-  const range = previousTag ? `${previousTag}..HEAD` : ''
-  const log = capture('git', ['log', '--pretty=format:- %s', range].filter(Boolean), { allowFail: true })
-  return [
-    `DropMedia v${nextVersion}`,
-    '',
-    'Changes:',
-    log || `- Release from v${currentVersion} to v${nextVersion}`,
-    '',
-    'Validation required before publishing:',
-    '- npm run build',
-    '- npm run audit:package',
-    '- AppImage/deb smoke test'
-  ].join('\n')
+  // Git log'undan otomatik çıkar
+  const prevTag = capture('git', ['describe', '--tags', '--abbrev=0', '--match=v*'], { allowFail: true })
+  const range   = prevTag ? `${prevTag}..HEAD` : ''
+  const log     = capture('git', ['log', '--pretty=format:- %s', range].filter(Boolean), { allowFail: true })
+  return log || `- ${nextVersion} sürümüne güncellendi`
 }
 
 function updateVersionFiles(version) {
@@ -152,54 +178,70 @@ function updateVersionFiles(version) {
   }
 }
 
-function collectReleaseFiles(version) {
-  if (!fs.existsSync(releaseDir)) return []
-  return fs.readdirSync(releaseDir)
-    .filter(file => {
-      if (file === 'latest.yml' || file === 'latest-linux.yml') return true
-      if (!file.includes(version)) return false
-      return /\.(AppImage|deb|exe|blockmap|yml|yaml)$/i.test(file)
-    })
-    .map(file => path.join(releaseDir, file))
-    .filter(file => fs.statSync(file).isFile())
+function resolveNextVersion(current, bump) {
+  if (isValidSemver(bump)) return bump
+  const valid = new Set(['patch', 'minor', 'major'])
+  if (!valid.has(bump)) fail(`Geçersiz bump: ${bump}. patch/minor/major veya tam semver kullanın.`)
+  const [maj, min, pat] = current.split('.').map(Number)
+  if ([maj, min, pat].some(n => !Number.isFinite(n))) fail(`Geçersiz versiyon: ${current}`)
+  if (bump === 'major') return `${maj + 1}.0.0`
+  if (bump === 'minor') return `${maj}.${min + 1}.0`
+  return `${maj}.${min}.${pat + 1}`
+}
+
+function isValidSemver(v) {
+  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/.test(v)
+}
+
+function parseArgs(args) {
+  const opts = { bump: 'patch', notes: '', notesFile: '', dryRun: false, allowDirty: false }
+  if (args[0] && !args[0].startsWith('--')) opts.bump = args.shift()
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '--notes')       opts.notes     = args[++i] ?? ''
+    else if (a === '--notes-file') opts.notesFile = args[++i] ?? ''
+    else if (a === '--dry-run')    opts.dryRun    = true
+    else if (a === '--allow-dirty') opts.allowDirty = true
+    else fail(`Bilinmeyen seçenek: ${a}`)
+  }
+  return opts
 }
 
 function assertCleanGit() {
-  const status = capture('git', ['status', '--porcelain'])
-  if (status) {
-    fail('Git worktree is dirty. Commit/stash changes first, or pass --allow-dirty intentionally.')
+  const out = capture('git', ['status', '--porcelain'])
+  if (out) fail('Git çalışma dizini temiz değil. Commit/stash yapın veya --allow-dirty kullanın.')
+}
+
+function assertCommand(cmd, args) {
+  const r = spawnSync(cmd, args, { cwd: root, stdio: 'ignore' })
+  if (r.status !== 0) fail(`Gerekli komut bulunamadı: ${cmd}`)
+}
+
+function run(cmd, args) {
+  console.log(`  > ${cmd} ${args.join(' ')}`)
+  const result = spawnSyncCompat(cmd, args, { cwd: root, stdio: 'inherit' })
+  if (result.status !== 0) fail(`Komut başarısız: ${cmd} ${args.join(' ')}`)
+}
+
+function capture(cmd, args, opts = {}) {
+  const r = spawnSyncCompat(cmd, args, { cwd: root, encoding: 'utf8' })
+  if (r.status !== 0 && !opts.allowFail) fail(`Komut başarısız: ${cmd} ${args.join(' ')}`)
+  return (r.stdout || '').trim()
+}
+
+function spawnSyncCompat(cmd, args, options) {
+  if (process.platform === 'win32' && (cmd === 'npm' || cmd === 'npx')) {
+    return spawnSync('cmd.exe', ['/d', '/s', '/c', `${cmd}.cmd ${args.join(' ')}`], options)
   }
-}
-
-function assertCommand(command, args) {
-  const result = spawn(command, args, { cwd: root, stdio: 'ignore' })
-  if (result.status !== 0) fail(`Required command failed: ${command}`)
-}
-
-function run(command, args) {
-  const result = spawn(command, args, { cwd: root, stdio: 'inherit' })
-  if (result.status !== 0) fail(`Command failed: ${command} ${args.join(' ')}`)
-}
-
-function capture(command, args, opts = {}) {
-  const result = spawn(command, args, { cwd: root, encoding: 'utf8' })
-  if (result.status !== 0 && !opts.allowFail) fail(`Command failed: ${command} ${args.join(' ')}`)
-  return result.stdout.trim()
-}
-
-function spawn(command, args, options) {
-  if (process.platform === 'win32' && (command === 'npm' || command === 'npx')) {
-    return spawnSync('cmd.exe', ['/d', '/s', '/c', `${command}.cmd ${args.join(' ')}`], options)
-  }
-  return spawnSync(command, args, options)
+  return spawnSync(cmd, args, options)
 }
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'))
 }
 
-function fail(message) {
-  console.error(message)
+function fail(msg) {
+  console.error(`\nHata: ${msg}`)
   process.exit(1)
 }
 

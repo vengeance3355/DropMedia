@@ -100,13 +100,10 @@ export async function updateYtDlp(): Promise<{ success: boolean; version?: strin
 
     await downloadWithProgress(downloadUrl, tempFile, 'ytdlp-update-progress')
 
-    if (!IS_WIN) chmodSync(tempFile, 0o755)
-
     const version = await getVersion(tempFile)
     if (!version || version === 'unknown') throw new Error('yt-dlp version check failed')
 
     copyFileSync(tempFile, dest)
-    if (!IS_WIN) chmodSync(dest, 0o755)
 
     send('ytdlp-update-progress', { status: 'done', percent: 100, version })
     rmSync(tempDir, { recursive: true, force: true })
@@ -140,11 +137,7 @@ export async function installFfmpeg(): Promise<{ success: boolean; error?: strin
       return { success: true }
     }
 
-    if (IS_WIN) {
-      await installFfmpegWindows(tempDir)
-    } else {
-      await installFfmpegLinux(tempDir)
-    }
+    await installFfmpegWindows(tempDir)
 
     if (!hasWorkingFfmpeg()) throw new Error('ffmpeg version check failed')
 
@@ -222,75 +215,6 @@ function findExeInDir(dir: string, name: string): string | null {
     }
   } catch { /* ignore */ }
   return null
-}
-
-// ── Linux/macOS: tar.xz indirme ───────────────────────────────────────────────
-
-async function installFfmpegLinux(tempDir: string): Promise<void> {
-  const FFMPEG_URL = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz'
-  const tarPath    = join(tempDir, 'ffmpeg-static.tar.xz')
-  const extractDir = join(tempDir, 'extract')
-  const binDir     = getBinDir()
-  const destBin    = join(binDir, 'ffmpeg')
-  const destProbe  = join(binDir, 'ffprobe')
-
-  mkdirSync(extractDir, { recursive: true })
-
-  const aptResult = await tryInstallFfmpegWithApt()
-  if (aptResult.success) return  // 'done' göndermeyi üst fonksiyon yapar
-
-  send('ffmpeg-install-progress', { status: 'downloading', percent: 0 })
-
-  await downloadWithProgress(FFMPEG_URL, tarPath, 'ffmpeg-install-progress')
-  if (!existsSync(tarPath) || statSync(tarPath).size < 1024 * 1024) {
-    throw new Error('Downloaded ffmpeg archive is missing or too small')
-  }
-
-  send('ffmpeg-install-progress', { status: 'extracting', percent: 100 })
-
-  await new Promise<void>((resolve, reject) => {
-    const args = ['-xJf', tarPath, '-C', extractDir, '--strip-components=1', '--wildcards', '--no-anchored', '*/ffmpeg', '*/ffprobe']
-    const proc = spawn('tar', args, { stdio: 'pipe' })
-    let stderr = ''
-    proc.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
-    proc.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`tar exit ${code}\n${stderr}`))
-    })
-    proc.on('error', reject)
-  })
-
-  for (const [src, dst] of [[join(extractDir, 'ffmpeg'), destBin], [join(extractDir, 'ffprobe'), destProbe]] as [string, string][]) {
-    if (existsSync(src)) {
-      copyFileSync(src, dst)
-      chmodSync(dst, 0o755)
-    }
-  }
-
-  if (!existsSync(destBin) || !existsSync(destProbe)) {
-    throw new Error('ffmpeg or ffprobe binary was not found after extraction')
-  }
-}
-
-function tryInstallFfmpegWithApt(): Promise<{ success: boolean; stderr?: string; code?: number | null }> {
-  if (process.platform !== 'linux' || !commandExists('apt-get') || !commandExists('pkexec')) {
-    return Promise.resolve({ success: false })
-  }
-
-  send('ffmpeg-install-progress', { status: 'system-install', percent: 0 })
-
-  return new Promise((resolve) => {
-    const proc = spawn('pkexec', ['apt-get', 'install', '-y', 'ffmpeg'], { stdio: 'pipe' })
-    let stderr = ''
-
-    proc.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
-    proc.on('close', (code) => {
-      resolve({ success: code === 0 && hasWorkingFfmpeg(), stderr, code })
-    })
-    proc.on('error', (err) => {
-      resolve({ success: false, stderr: err.message, code: null })
-    })
-  })
 }
 
 function friendlyInstallerError(tool: 'ffmpeg' | 'ytdlp', detail: string): string {
