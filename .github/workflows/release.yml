@@ -4,29 +4,26 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Version bump; exact version is used when version is set"
+        description: "Version bump (patch/minor/major). Exact version kullanılırsa yok sayılır."
         required: true
         default: "patch"
         type: choice
-        options:
-          - patch
-          - minor
-          - major
+        options: [patch, minor, major]
       version:
-        description: "Exact semver version, optional"
+        description: "Tam semver (opsiyonel, örn: 1.2.0)"
         required: false
         type: string
       notes:
-        description: "Release notes, optional"
+        description: "Release notları (boşsa git log kullanılır)"
         required: false
         type: string
       draft:
-        description: "Create GitHub release as draft"
+        description: "Draft olarak oluştur"
         required: true
         default: false
         type: boolean
       prerelease:
-        description: "Mark as prerelease"
+        description: "Prerelease olarak işaretle"
         required: true
         default: false
         type: boolean
@@ -41,6 +38,7 @@ concurrency:
 jobs:
   release:
     runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,37 +50,33 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install dependencies
+      - name: Bağımlılıkları kur
         run: npm ci
 
-      - name: Configure git
+      - name: Git yapılandır
         run: |
-          git config user.name "dropmedia-release-bot"
+          git config user.name  "dropmedia-release-bot"
           git config user.email "dropmedia-release-bot@users.noreply.github.com"
 
-      - name: Build and publish release
+      - name: Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
+
           TARGET="${{ inputs.version }}"
-          if [ -z "$TARGET" ]; then
-            TARGET="${{ inputs.bump }}"
-          fi
+          if [ -z "$TARGET" ]; then TARGET="${{ inputs.bump }}"; fi
 
           ARGS=("$TARGET" "--allow-dirty")
+
           if [ -n "$RELEASE_NOTES" ]; then
-            NOTES_FILE="/tmp/dropmedia-release-notes.md"
-            printf '%s\n' "$RELEASE_NOTES" > "$NOTES_FILE"
-            ARGS+=("--notes-file" "$NOTES_FILE")
+            printf '%s\n' "$RELEASE_NOTES" > /tmp/rn.md
+            ARGS+=("--notes-file" "/tmp/rn.md")
           fi
-          if [ "${{ inputs.draft }}" = "true" ]; then
-            ARGS+=("--draft")
-          fi
-          if [ "${{ inputs.prerelease }}" = "true" ]; then
-            ARGS+=("--prerelease")
-          fi
+
+          [ "${{ inputs.draft }}"      = "true" ] && ARGS+=("--draft")
+          [ "${{ inputs.prerelease }}" = "true" ] && ARGS+=("--prerelease")
 
           node scripts/release.js "${ARGS[@]}"
