@@ -98,7 +98,7 @@ function main() {
   const check = spawnSync('gh', ['release', 'view', STABLE_TAG], { cwd: root, encoding: 'utf8' })
   if (check.status === 0) {
     // Güncelle
-    run('gh', ['release', 'edit', STABLE_TAG, '--title', RELEASE_TITLE, '--notes', newBody])
+    run('gh', ['release', 'edit', STABLE_TAG, '--title', RELEASE_TITLE, '--notes', newBody, '--draft=false'])
     run('gh', ['release', 'upload', STABLE_TAG, zipDest, '--clobber'])
     run('gh', ['release', 'upload', STABLE_TAG, versionFile, '--clobber'])
   } else {
