@@ -121,7 +121,7 @@ async function signOut(): Promise<SyncStatus> {
 }
 
 async function pushProductState(state: object): Promise<{ ok: true; syncedAt: number }> {
-  const session = requireSession()
+  const session = await requireSession()
   await assertSyncReachable()
   const syncedAt = Date.now()
   await restRequest('/rest/v1/user_settings', {
@@ -139,7 +139,7 @@ async function pushProductState(state: object): Promise<{ ok: true; syncedAt: nu
 }
 
 async function pullProductState(): Promise<{ data: unknown | null; syncedAt?: string }> {
-  const session = requireSession()
+  const session = await requireSession()
   await assertSyncReachable()
   const rows = await restRequest<Array<{ data: unknown; updated_at?: string }>>('/rest/v1/user_settings?namespace=eq.product_hub&select=data,updated_at&limit=1', {
     method: 'GET',
@@ -169,10 +169,30 @@ function assertCredentials(email: string, password: string): void {
   if (password.length < 6) throw new Error('Şifre en az 6 karakter olmalı.')
 }
 
-function requireSession(): SyncSession {
+async function requireSession(): Promise<SyncSession> {
   assertConfigured()
-  const session = readSession()
+  let session = readSession()
   if (!session?.access_token) throw new Error('Sync için önce giriş yapın.')
+
+  // Supabase access token ~1 saat yaşar; yenilenmezse her saat "JWT expired"
+  // ile düşer ve kullanıcı tekrar giriş yapmak zorunda kalır. Süresi dolmuş
+  // (veya dolmak üzere / süresi bilinmeyen) token'ı refresh_token ile yenile.
+  const expiresAt = session.expires_at ?? 0
+  const needsRefresh = expiresAt === 0 || expiresAt - 60 <= Math.floor(Date.now() / 1000)
+  if (session.refresh_token && needsRefresh) {
+    try {
+      const auth = await authRequest('/auth/v1/token?grant_type=refresh_token', {
+        refresh_token: session.refresh_token
+      })
+      if (auth.access_token && auth.user?.id) {
+        session = toSession(auth)
+        writeSession(session)
+      }
+    } catch {
+      store.delete(SESSION_KEY)
+      throw new Error('Oturum süresi doldu. Lütfen tekrar giriş yapın.')
+    }
+  }
   return session
 }
 
