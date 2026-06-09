@@ -1,4 +1,4 @@
 {
-  "version": "1.0.11",
-  "notes": "- Hesap oturumu artık otomatik yenileniyor (saatte bir \"tekrar giriş yapın\" sorunu giderildi)"
+  "version": "1.0.12",
+  "notes": "- Supabase yedekleme düzeltildi (her seferinde hata veriyordu)\n- Video indirme düzeltildi (Chrome çerez hatasında artık gerçekten çerezsiz deneniyor)\n- Opera GX çerezleri artık listede\n- \"Güncelle\" artık indirme ilerlemesini gösteriyor, takılırsa kaldığı yerden devam ediyor\n- Kararlılık: süreç zaman aşımları, yarım kurulum koruması, log kuyruğu iyileştirmeleri"
 }

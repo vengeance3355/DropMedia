@@ -135,3 +135,12 @@ Ana sürüm
 
 # 1.0.11
 - Hesap oturumu artık otomatik yenileniyor (saatte bir "tekrar giriş yapın" sorunu giderildi)
+
+---
+
+# 1.0.12
+- Supabase yedekleme düzeltildi (her seferinde hata veriyordu)
+- Video indirme düzeltildi (Chrome çerez hatasında artık gerçekten çerezsiz deneniyor)
+- Opera GX çerezleri artık listede
+- "Güncelle" artık indirme ilerlemesini gösteriyor, takılırsa kaldığı yerden devam ediyor
+- Kararlılık: süreç zaman aşımları, yarım kurulum koruması, log kuyruğu iyileştirmeleri
