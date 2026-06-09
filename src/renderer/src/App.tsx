@@ -473,6 +473,9 @@ export default function App() {
             <span className="text-[13px] font-semibold tracking-[-0.01em] text-white/90">DropMedia</span>
           </div>
           <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <button onClick={() => window.api.maximizeWindow()} title="Tam ekran" className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-white/[0.06] hover:text-zinc-200">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            </button>
             <button onClick={() => window.api.openMiniWindow()} title="Mini mod" className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-white/[0.06] hover:text-zinc-200">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/>
@@ -486,8 +489,6 @@ export default function App() {
             </button>
           </div>
         </div>
-
-        <UpdateBanner />
 
         {/* Clipboard toast */}
         {clipboardToast && (
@@ -503,7 +504,7 @@ export default function App() {
 
         <div className="flex min-h-0 flex-1">
           <aside className="flex w-[220px] shrink-0 flex-col border-r border-white/[0.04] bg-[#0F0F12]/95 px-3 py-4">
-            <nav className="flex flex-col gap-1">
+            <nav className="flex-1 overflow-y-auto flex flex-col gap-1 min-h-0 pb-2">
               <SidebarItem active={activeTab === 'queue'} onClick={() => setActiveTab('queue')} icon={<DownloadIcon />}>
                 İndir{queueItems.length > 0 && <Badge>{queueItems.length}</Badge>}
               </SidebarItem>
@@ -542,7 +543,7 @@ export default function App() {
               </SidebarItem>
             </nav>
 
-            <div className="mt-auto space-y-3">
+            <div className="shrink-0 space-y-3 pt-2">
               {activeCount > 0 && (
                 <div className="rounded-xl border border-[#7C3AED]/20 bg-[#7C3AED]/10 px-3 py-2">
                   <div className="flex items-center gap-2">
@@ -566,6 +567,7 @@ export default function App() {
           </aside>
 
           <main className="flex min-w-0 flex-1 flex-col bg-[#0F0F12]/40">
+            <UpdateBanner />
             <div className="border-b border-white/[0.04] px-6 py-5">
               <UrlInput
                 onDownload={handleDownload}

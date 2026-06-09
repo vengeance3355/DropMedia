@@ -15,6 +15,7 @@ import { logError } from './logger'
 
 const VERSION_URL   = 'https://github.com/vengeance3355/DropMedia/releases/download/stable/version.json'
 const RELEASE_API   = 'https://api.github.com/repos/vengeance3355/DropMedia/releases/tags/stable'
+const ZIP_URL       = 'https://github.com/vengeance3355/DropMedia/releases/download/stable/DropMedia-win-x64.zip'
 
 interface ReleaseInfo {
   version: string
@@ -100,7 +101,7 @@ export function setupUpdater(window: BrowserWindow): void {
     if (!window.isDestroyed()) window.webContents.send('update-status', data)
   }
 
-  let pendingInstallerPath: string | null = null
+  let pendingZipPath: string | null = null
 
   ipcMain.handle('check-for-updates', async () => {
     send({ type: 'checking' })
@@ -124,16 +125,16 @@ export function setupUpdater(window: BrowserWindow): void {
 
       const tmpDir = join(tmpdir(), 'dropmedia-update')
       mkdirSync(tmpDir, { recursive: true })
-      const installerPath = join(tmpDir, 'DropMedia-Installer.exe')
+      const zipPath = join(tmpDir, 'DropMedia-win-x64.zip')
 
       send({ type: 'downloading', progress: { percent: 0 } })
 
-      await downloadFile(info.installerUrl, installerPath, (pct) => {
+      await downloadFile(ZIP_URL, zipPath, (pct) => {
         send({ type: 'downloading', progress: { percent: pct } })
       })
 
-      pendingInstallerPath = installerPath
-      send({ type: 'downloaded', info: { version: info.version } })
+      pendingZipPath = zipPath
+      send({ type: 'downloaded', info: { version: `Hazır - v${info.version}` } })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       send({ type: 'error', error: msg })
@@ -142,18 +143,33 @@ export function setupUpdater(window: BrowserWindow): void {
   })
 
   ipcMain.handle('install-update', () => {
-    if (!pendingInstallerPath || !existsSync(pendingInstallerPath)) {
-      send({ type: 'error', error: 'Installer bulunamadı. Tekrar indirmeyi deneyin.' })
+    if (!pendingZipPath || !existsSync(pendingZipPath)) {
+      send({ type: 'error', error: 'Zip bulunamadı. Tekrar indirmeyi deneyin.' })
       return
     }
 
-    // Mevcut kurulum dizinini hesapla (exe'nin üst klasörü)
-    const installPath = join(app.getPath('exe'), '..')
+    const localAppData = process.env.LOCALAPPDATA || join(require('os').homedir(), 'AppData', 'Local')
+    const installerExe = join(localAppData, 'DropMedia', 'DropMedia-Installer.exe')
+    const installDir   = join(localAppData, 'DropMedia')
 
-    spawn(pendingInstallerPath, ['--update', `--install-path=${installPath}`], {
-      detached: true,
-      stdio: 'ignore'
-    }).unref()
+    if (existsSync(installerExe)) {
+      // Installer kuruluysa, ona bırak (tek indirme: zip zaten var)
+      spawn(installerExe, ['--update', `--local-zip=${pendingZipPath}`, `--install-path=${installDir}`], {
+        detached: true,
+        stdio: 'ignore'
+      }).unref()
+    } else {
+      // Installer kurulu değil, PowerShell ile direkt extract et
+      const { spawnSync } = require('child_process')
+      spawnSync('taskkill', ['/F', '/IM', 'DropMedia.exe'], { stdio: 'pipe' })
+      spawnSync('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Expand-Archive -LiteralPath '${pendingZipPath}' -DestinationPath '${installDir}' -Force`
+      ], { stdio: 'pipe' })
+      // Yeniden başlat
+      const exe = join(installDir, 'DropMedia.exe')
+      if (existsSync(exe)) spawn(exe, [], { detached: true, stdio: 'ignore' }).unref()
+    }
 
     app.quit()
   })
