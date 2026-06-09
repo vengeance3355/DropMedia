@@ -119,3 +119,9 @@ Ana sürüm
 # 1.0.8
 - İndirme takılması düzeltildi (büyük dosyalarda donmuyor, kaldığı yerden devam ediyor)
 - Güncelleme ekranındaki dönen halka düzeltildi
+
+---
+
+# 1.0.9
+- Hesap girişi ve uzak hata kayıtları düzeltildi (uygulama kimliği pakete eklenmedi sorunu)
+- Chrome çerez hatasında indirme artık otomatik çerezsiz devam ediyor

@@ -1,4 +1,4 @@
 {
-  "version": "1.0.8",
-  "notes": "- İndirme takılması düzeltildi (büyük dosyalarda donmuyor, kaldığı yerden devam ediyor)\n- Güncelleme ekranındaki dönen halka düzeltildi"
+  "version": "1.0.9",
+  "notes": "- Hesap girişi ve uzak hata kayıtları düzeltildi (uygulama kimliği pakete eklenmedi sorunu)\n- Chrome çerez hatasında indirme artık otomatik çerezsiz devam ediyor"
 }
