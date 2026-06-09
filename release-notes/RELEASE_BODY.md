@@ -108,3 +108,8 @@ Ana sürüm
 - Güncelleme döngüsü düzeltildi (installer indirmelerine cache-bust)
 - Güncelleyici yoksa otomatik indirilir
 - AI redesign + admin panel sadeleştirmesi (önceki sürümlerden)
+
+---
+
+# 1.0.7
+- Güncelleme düzeltildi: "Güncelle" artık installer'ı indirip gerçekten günceller (eskiden sadece uygulamayı yeniden başlatıyordu)

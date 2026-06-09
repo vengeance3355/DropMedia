@@ -1,4 +1,4 @@
 {
-  "version": "1.0.6",
-  "notes": "- Güncelleme döngüsü düzeltildi (installer indirmelerine cache-bust)\n- Güncelleyici yoksa otomatik indirilir\n- AI redesign + admin panel sadeleştirmesi (önceki sürümlerden)"
+  "version": "1.0.7",
+  "notes": "- Güncelleme düzeltildi: \"Güncelle\" artık installer'ı indirip gerçekten günceller (eskiden sadece uygulamayı yeniden başlatıyordu)"
 }
