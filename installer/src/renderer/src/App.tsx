@@ -26,7 +26,7 @@ function Logo({ spinning = false }: { spinning?: boolean }) {
         </svg>
       </div>
       {spinning && (
-        <div className="absolute -inset-2 pointer-events-none">
+        <div className="absolute -inset-[14px] pointer-events-none">
           <svg className="w-full h-full animate-spin-slow" viewBox="0 0 80 80">
             <circle cx="40" cy="40" r="36" fill="none" stroke="url(#rg)" strokeWidth="2.5" strokeDasharray="60 165" strokeLinecap="round"/>
             <defs>
@@ -66,7 +66,8 @@ function ErrorIcon() {
 }
 
 function Spinner({ size = 5 }: { size?: number }) {
-  return <div className={`w-${size} h-${size} rounded-full border-2 border-white/20 border-t-white/80 animate-spin`}/>
+  const px = size * 4
+  return <div style={{ width: px, height: px }} className="rounded-full border-2 border-white/20 border-t-white/80 animate-spin"/>
 }
 
 function ProgressBar({ pct }: { pct: number }) {

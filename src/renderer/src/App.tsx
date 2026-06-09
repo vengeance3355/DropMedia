@@ -17,10 +17,6 @@ import { isLikelyVideoUrl } from './utils/videoUrl'
 
 type Tab = 'queue' | 'history' | 'convert' | 'subtitle' | 'stats' | ProductHubView
 const PRODUCT_TABS: readonly ProductHubView[] = ['links', 'watch', 'library', 'automation', 'ai', 'ai-chat', 'account']
-type RepairMediaMetadataResult = { success: boolean; item?: DownloadItem; error?: string }
-type RepairMediaMetadataApi = typeof window.api & {
-  repairThumbnail: (id: string) => Promise<RepairMediaMetadataResult>
-}
 
 // Tamamlanma sesi (kısa bip — base64 data URL)
 const COMPLETION_BEEP = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
@@ -197,7 +193,7 @@ export default function App() {
         ...(thumbnailPath ? { thumbnailPath, localThumbnailPath: thumbnailPath } : {})
       }
       const id = addItem(url, format, videoInfo, initial)
-      return await startDownloadItem({ id, url, selectedFormat: format, videoInfo, outputDir: dir, ...initial, progress: 0, speed: '', eta: '', totalSize: '' } as DownloadItem, 'start')
+      return await startDownloadItem({ id, url, selectedFormat: format, videoInfo, ...initial, progress: 0, speed: '', eta: '', totalSize: '' } as DownloadItem, 'start')
     } catch {
       return false
     } finally {
@@ -318,7 +314,7 @@ export default function App() {
   }
 
   async function handleRepairMediaMetadata(id: string) {
-    const result = await (window.api as RepairMediaMetadataApi).repairThumbnail(id)
+    const result = await window.api.repairThumbnail(id)
     if (result.success && result.item) {
       updateStatus(id, result.item.status, result.item)
     }
