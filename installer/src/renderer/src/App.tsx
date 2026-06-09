@@ -113,7 +113,7 @@ function WelcomeScreen({ info, installDir, onDirChange, onBrowse, onInstall, onU
       {(isUpdate || isInstall) && info.notes && (
         <div className="w-full rounded-xl bg-white/3 border border-white/6 px-4 py-3">
           <p className="text-white/30 text-[11px] mb-1 font-medium uppercase tracking-wider">Yenilikler</p>
-          <pre className="text-white/60 text-xs whitespace-pre-wrap leading-relaxed">{info.notes}</pre>
+          <pre className="text-white/60 text-xs whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto pr-1">{info.notes}</pre>
         </div>
       )}
 
