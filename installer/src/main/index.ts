@@ -42,6 +42,10 @@ function getInstalledVersion(dir = activeDir): string | null {
   } catch { return null }
 }
 
+function stripBom(s: string): string {
+  return s.replace(/^﻿/, '').trim()
+}
+
 function httpsGetJson(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const follow = (u: string) => {
@@ -51,7 +55,7 @@ function httpsGetJson(url: string): Promise<unknown> {
         }
         let data = ''
         res.on('data', (c: Buffer) => (data += c.toString()))
-        res.on('end', () => { try { resolve(JSON.parse(data)) } catch (e) { reject(e) } })
+        res.on('end', () => { try { resolve(JSON.parse(stripBom(data))) } catch (e) { reject(e) } })
         res.on('error', reject)
       }).on('error', reject)
     }
