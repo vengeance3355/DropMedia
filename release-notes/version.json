@@ -1,4 +1,4 @@
 {
-  "version": "1.0.7",
-  "notes": "- Güncelleme düzeltildi: \"Güncelle\" artık installer'ı indirip gerçekten günceller (eskiden sadece uygulamayı yeniden başlatıyordu)"
+  "version": "1.0.8",
+  "notes": "- İndirme takılması düzeltildi (büyük dosyalarda donmuyor, kaldığı yerden devam ediyor)\n- Güncelleme ekranındaki dönen halka düzeltildi"
 }

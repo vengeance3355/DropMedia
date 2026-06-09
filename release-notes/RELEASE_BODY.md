@@ -113,3 +113,9 @@ Ana sürüm
 
 # 1.0.7
 - Güncelleme düzeltildi: "Güncelle" artık installer'ı indirip gerçekten günceller (eskiden sadece uygulamayı yeniden başlatıyordu)
+
+---
+
+# 1.0.8
+- İndirme takılması düzeltildi (büyük dosyalarda donmuyor, kaldığı yerden devam ediyor)
+- Güncelleme ekranındaki dönen halka düzeltildi
