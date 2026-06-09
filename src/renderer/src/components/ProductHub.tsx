@@ -856,7 +856,10 @@ export function ProductHub({
   async function stopAiChat() {
     const sessionId = selectedAiChat?.id ?? selectedAiChatId
     try {
-      await window.api.stopAiChat(sessionId && sessionId !== NEW_AI_CHAT_ID ? sessionId : undefined)
+      // draft-* (henüz sunucuya kaydolmamış yeni sohbet) id'leri sunucu job key'iyle
+      // eşleşmez; bu durumda undefined geçip sunucunun "tüm chat'leri durdur" dalına düş.
+      const persisted = sessionId && sessionId !== NEW_AI_CHAT_ID && !sessionId.startsWith('draft-')
+      await window.api.stopAiChat(persisted ? sessionId : undefined)
     } catch (err) {
       logClientError(err, 'ai-chat-stop', cleanError(err))
     }
