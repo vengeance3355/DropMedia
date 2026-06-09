@@ -6,7 +6,7 @@
  */
 
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { existsSync, createWriteStream, mkdirSync } from 'fs'
+import { createWriteStream, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir, tmpdir } from 'os'
 import { get as httpsGet } from 'https'
@@ -98,27 +98,25 @@ export function setupUpdater(window: BrowserWindow): void {
     }
   })
 
-  // "Güncelle": uygulama hiçbir şey indirmez. Kurulum dizinindeki installer'ı açar.
-  // Installer (DropMedia-Installer.exe) kurulum sırasında kendini buraya kopyalar.
+  // "Güncelle": gerçek NSIS installer'ı (kendi app.asar'ını taşıyan self-extractor)
+  // HER ZAMAN stable'dan indirip çalıştırır. Kurulum dizinine kopyalanan exe YANLIŞ:
+  // o exe app'in resources/app.asar'ını yükleyip installer yerine app'i açar
+  // (bu yüzden eski sürümlerde "Güncelle" sadece uygulamayı yeniden başlatıyordu).
   ipcMain.handle('install-update', async () => {
     const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local')
     const installDir   = join(localAppData, 'DropMedia')
-    let   installerExe = join(installDir, 'DropMedia-Installer.exe')
 
-    // Installer kurulum dizininde yoksa stable'dan indir (cache-bust) ve temp'ten çalıştır.
-    if (!existsSync(installerExe)) {
-      try {
-        const tmp = join(tmpdir(), 'dropmedia-update')
-        mkdirSync(tmp, { recursive: true })
-        const dl = join(tmp, 'DropMedia-Installer.exe')
-        await downloadFile(`${INSTALLER_URL}?nc=${Date.now()}`, dl)
-        installerExe = dl
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        send({ type: 'error', error: 'Güncelleyici indirilemedi: ' + msg })
-        void logError({ errorType: 'update', errorMessage: 'Installer indirilemedi: ' + msg, operation: 'install-update-download' })
-        return
-      }
+    let installerExe: string
+    try {
+      const tmp = join(tmpdir(), 'dropmedia-update')
+      mkdirSync(tmp, { recursive: true })
+      installerExe = join(tmp, 'DropMedia-Installer.exe')
+      await downloadFile(`${INSTALLER_URL}?nc=${Date.now()}`, installerExe)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      send({ type: 'error', error: 'Güncelleyici indirilemedi: ' + msg })
+      void logError({ errorType: 'update', errorMessage: 'Installer indirilemedi: ' + msg, operation: 'install-update-download' })
+      return
     }
 
     // Installer DropMedia'yı kapatır, GitHub'dan en son sürümü indirir, kurar, yeniden başlatır.
