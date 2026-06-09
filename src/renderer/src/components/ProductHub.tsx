@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
+import { DEFAULT_SUBTITLE_STYLE } from '../types'
 import type {
+  AiChatModel,
+  AiChatSession,
+  AiJob,
+  AiJobKind,
+  AiBenchmarkResult,
+  AiSystemReport,
   AiToolState,
   DownloadItem,
   LinkInboxItem,
+  PostProcessRecipe,
   PreflightMessage,
   ProductHubState,
+  SmartProfile,
+  SubtitleStyle,
   WatchItem,
   WatchSource
 } from '../types'
@@ -25,9 +35,23 @@ interface Props {
   onShowItemInFolder: (item: DownloadItem) => void
   onConvertDone?: (id: string, newPath: string) => void
   onRepairMediaMetadata?: (id: string) => Promise<void>
+  onStartConvert?: (opts: { inputPath: string; outputFormat: string; outputPath: string; title: string }) => Promise<string>
+  onStartNormalize?: (opts: { inputPath: string; outputPath: string; title: string }) => Promise<string>
+  onStartSubtitle?: (opts: {
+    inputPath: string
+    outputPath: string
+    mode: 'burn' | 'soft' | 'save'
+    style: SubtitleStyle
+    url?: string
+    subtitlePath?: string
+    lang?: string
+    cookieBrowser?: string
+    replaceOriginal?: boolean
+    title?: string
+  }) => Promise<string>
 }
 
-export type ProductHubView = 'links' | 'watch' | 'library' | 'automation' | 'ai' | 'account'
+export type ProductHubView = 'links' | 'watch' | 'library' | 'automation' | 'ai' | 'ai-chat' | 'account'
 type SyncStatus = {
   configured: boolean
   signedIn: boolean
@@ -42,6 +66,35 @@ type SyncStatus = {
     message?: string
     missingTables?: string[]
     checkedAt: number
+  }
+}
+type AiActionKind = Exclude<AiJobKind, 'install' | 'repair' | 'remove' | 'benchmark'>
+const NEW_AI_CHAT_ID = '__new_ai_chat__'
+
+const pendingAiChatIds = new Set<string>()
+const aiChatPendingSubscribers = new Set<(ids: Set<string>) => void>()
+
+function subscribeAiChatPending(listener: (ids: Set<string>) => void): () => void {
+  listener(new Set(pendingAiChatIds))
+  aiChatPendingSubscribers.add(listener)
+  return () => aiChatPendingSubscribers.delete(listener)
+}
+
+function setAiChatPending(ids: string[], pending: boolean): void {
+  let changed = false
+  for (const id of ids.filter(Boolean)) {
+    const had = pendingAiChatIds.has(id)
+    if (pending && !had) {
+      pendingAiChatIds.add(id)
+      changed = true
+    } else if (!pending && had) {
+      pendingAiChatIds.delete(id)
+      changed = true
+    }
+  }
+  if (changed) {
+    const next = new Set(pendingAiChatIds)
+    aiChatPendingSubscribers.forEach(listener => listener(next))
   }
 }
 
@@ -65,6 +118,10 @@ const VIEW_META: Record<ProductHubView, { title: string; description: string }> 
   ai: {
     title: 'Local AI',
     description: 'Tamamen opsiyonel ücretsiz local model özellikleri; kullanıcı onayı olmadan model indirmez.'
+  },
+  'ai-chat': {
+    title: 'AI Chat',
+    description: 'Local modellerle sohbet et, dosya bağla, transcript/özet/çeviri işlerini konuşarak başlat.'
   },
   account: {
     title: 'Hesap',
@@ -95,7 +152,10 @@ export function ProductHub({
   onClearCompleted,
   onShowItemInFolder,
   onConvertDone,
-  onRepairMediaMetadata
+  onRepairMediaMetadata,
+  onStartConvert,
+  onStartNormalize,
+  onStartSubtitle
 }: Props) {
   const [state, setState] = useState<ProductHubState>(EMPTY)
   const [bulkUrls, setBulkUrls] = useState('')
@@ -105,8 +165,28 @@ export function ProductHub({
   const [syncPassword, setSyncPassword] = useState('')
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({ configured: false, signedIn: false })
   const [syncMessage, setSyncMessage] = useState('')
+  const [aiJobs, setAiJobs] = useState<AiJob[]>([])
+  const [selectedAiItemId, setSelectedAiItemId] = useState('')
+  const [selectedAutomationItemId, setSelectedAutomationItemId] = useState('')
+  const [selectedRecipeId, setSelectedRecipeId] = useState('')
+  const [automationMessage, setAutomationMessage] = useState('')
+  const [autoRecipeEnabled, setAutoRecipeEnabled] = useState(false)
+  const [autoRecipeId, setAutoRecipeId] = useState('')
+  const [aiMessage, setAiMessage] = useState('')
+  const [aiSystemReport, setAiSystemReport] = useState<AiSystemReport | null>(null)
+  const [aiBenchmarks, setAiBenchmarks] = useState<Record<string, AiBenchmarkResult>>({})
+  const [showAiSystemPanel, setShowAiSystemPanel] = useState(false)
+  const [aiChatModels, setAiChatModels] = useState<AiChatModel[]>([])
+  const [aiChatSessions, setAiChatSessions] = useState<AiChatSession[]>([])
+  const [selectedAiChatId, setSelectedAiChatId] = useState('')
+  const [aiChatInput, setAiChatInput] = useState('')
+  const [aiChatModel, setAiChatModel] = useState('qwen3.5:9b')
+  const [selectedChatItemId, setSelectedChatItemId] = useState('')
+  const [activeAiChatPendingIds, setActiveAiChatPendingIds] = useState<Set<string>>(() => new Set())
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [error, setError] = useState('')
+
+  useEffect(() => subscribeAiChatPending(setActiveAiChatPendingIds), [])
 
   useEffect(() => {
     let mounted = true
@@ -115,6 +195,12 @@ export function ProductHub({
     }).catch(err => setError(cleanError(err)))
     window.api.getSyncStatus().then(next => {
       if (mounted) setSyncStatus(next)
+    }).catch(() => {})
+    window.api.getSetting('automationAutoRecipe').then(value => {
+      if (mounted) setAutoRecipeEnabled(Boolean(value))
+    }).catch(() => {})
+    window.api.getSetting('automationAutoRecipeId').then(value => {
+      if (mounted) setAutoRecipeId(typeof value === 'string' ? value : '')
     }).catch(() => {})
 
     window.api.onProductStateUpdated(setState)
@@ -132,7 +218,101 @@ export function ProductHub({
     }
   }, [])
 
+  useEffect(() => {
+    window.api.listAiJobs().then(setAiJobs).catch(() => {})
+    const upsert = (job: AiJob) => {
+      setAiJobs(prev => upsertAiJobStable(prev, job))
+      if (job.kind === 'install' && job.status === 'done') {
+        setAiMessage(`${job.title} tamamlandı.`)
+        refreshAiStatus().catch(() => {})
+      } else if (job.kind === 'install' && job.status === 'error') {
+        setAiMessage(`${job.title} tamamlanamadı. Hata job geçmişine ve log sistemine yazıldı.`)
+      } else if (job.kind === 'remove' && job.status === 'done') {
+        setAiMessage(`${job.title} tamamlandı.`)
+        refreshAiStatus().catch(() => {})
+      } else if (job.kind === 'remove' && job.status === 'error') {
+        setAiMessage(`${job.title} tamamlanamadı. Hata job geçmişine ve log sistemine yazıldı.`)
+      }
+    }
+    window.api.onAiJobProgress(upsert)
+    window.api.onAiJobComplete(upsert)
+    return () => window.api.offAiJobListeners()
+  }, [])
+
+  useEffect(() => {
+    if (view === 'ai') {
+      refreshAiStatus().catch(() => {})
+      refreshAiSystemReport().catch(() => {})
+    }
+    if (view === 'ai-chat') {
+      refreshAiStatus().catch(() => {})
+      refreshAiChat().catch(err => setError(userFriendlyError(err, 'ai-chat-load')))
+    }
+  }, [view])
+
   const completed = useMemo(() => historyItems.filter(item => item.status === 'completed'), [historyItems])
+  const completedWithFiles = useMemo(() => completed.filter(item => !!item.outputPath), [completed])
+  const selectedAiItem = useMemo(
+    () => completedWithFiles.find(item => item.id === selectedAiItemId) ?? completedWithFiles[0],
+    [completedWithFiles, selectedAiItemId]
+  )
+  const selectedAutomationItem = useMemo(
+    () => completedWithFiles.find(item => item.id === selectedAutomationItemId) ?? completedWithFiles[0],
+    [completedWithFiles, selectedAutomationItemId]
+  )
+  const selectedChatItem = useMemo(
+    () => selectedChatItemId ? completedWithFiles.find(item => item.id === selectedChatItemId) : undefined,
+    [completedWithFiles, selectedChatItemId]
+  )
+  const selectedAiChatModelInfo = useMemo(
+    () => aiChatModels.find(model => model.id === aiChatModel),
+    [aiChatModels, aiChatModel]
+  )
+  const selectedRecipe = useMemo(
+    () => state.recipes.find(recipe => recipe.id === selectedRecipeId) ?? state.recipes[0],
+    [state.recipes, selectedRecipeId]
+  )
+  const recipeById = useMemo(
+    () => new Map(state.recipes.map(recipe => [recipe.id, recipe])),
+    [state.recipes]
+  )
+  const activeAiJobs = useMemo(
+    () => aiJobs.filter(job => job.status === 'running' || job.status === 'paused'),
+    [aiJobs]
+  )
+  const activeInstallByTool = useMemo(
+    () => activeToolJobMap(activeAiJobs, 'install'),
+    [activeAiJobs]
+  )
+  const activeRepairByTool = useMemo(
+    () => activeToolJobMap(activeAiJobs, 'repair'),
+    [activeAiJobs]
+  )
+  const activeRemoveByTool = useMemo(
+    () => activeToolJobMap(activeAiJobs, 'remove'),
+    [activeAiJobs]
+  )
+  const activeBenchmarkByTool = useMemo(
+    () => activeToolJobMap(activeAiJobs, 'benchmark'),
+    [activeAiJobs]
+  )
+  const activeInstallJobs = useMemo(
+    () => activeAiJobs
+      .filter(job => job.kind === 'install' || job.kind === 'repair')
+      .sort((a, b) => a.createdAt - b.createdAt),
+    [activeAiJobs]
+  )
+  const historyAiJobs = useMemo(
+    () => aiJobs.filter(job => !((job.kind === 'install' || job.kind === 'repair') && (job.status === 'running' || job.status === 'paused'))),
+    [aiJobs]
+  )
+  const selectedAiChat = useMemo(
+    () => selectedAiChatId && selectedAiChatId !== NEW_AI_CHAT_ID
+      ? aiChatSessions.find(session => session.id === selectedAiChatId)
+      : undefined,
+    [aiChatSessions, selectedAiChatId]
+  )
+  const selectedAiChatBusy = selectedAiChat ? activeAiChatPendingIds.has(selectedAiChat.id) : activeAiChatPendingIds.has(selectedAiChatId)
   const inboxReady = state.inbox.filter(item => item.status === 'checked' && item.preflight?.ok).length
   const newWatchItems = state.watchItems.filter(item => item.status === 'new').length
   const privateNeedsCookie = state.inbox.some(item => item.preflight?.needsCookies)
@@ -163,7 +343,9 @@ export function ProductHub({
       await refresh().catch(() => {})
       return result
     } catch (err) {
-      setError(cleanError(err))
+      const friendly = userFriendlyError(err, key)
+      setError(friendly)
+      logClientError(err, key, friendly)
       return undefined
     } finally {
       setBusy(prev => ({ ...prev, [key]: false }))
@@ -258,8 +440,200 @@ export function ProductHub({
     await run(`watch-check-${source.id}`, () => window.api.checkWatchSource(source.id))
   }
 
+  async function refreshAiStatus() {
+    const statuses = await window.api.getAiToolsStatus()
+    const statusById = new Map(statuses.map(status => [status.id, status]))
+    const current = await window.api.getProductState()
+    const nextTools = current.aiTools.map(tool => {
+      const status = statusById.get(tool.id)
+      return status ? { ...tool, installed: status.installed, statusDetail: status.detail, statusVersion: status.version } : tool
+    })
+    const changed = nextTools.some((tool, index) => tool.installed !== current.aiTools[index]?.installed)
+    if (changed) await window.api.setAiTools(nextTools)
+    setState({ ...current, aiTools: nextTools })
+  }
+
+  async function refreshAiSystemReport() {
+    const report = await window.api.getAiSystemReport()
+    setAiSystemReport(report)
+  }
+
+  async function refreshAiChat() {
+    const [models, sessions] = await Promise.all([
+      window.api.listAiChatModels(),
+      window.api.listAiChatSessions()
+    ])
+    setAiChatModels(models)
+    setAiChatSessions(sessions)
+    if ((!aiChatModel || !models.some(model => model.id === aiChatModel)) && models[0]) setAiChatModel(models[0].id)
+    if (selectedAiChatId !== NEW_AI_CHAT_ID && sessions.length && !sessions.some(session => session.id === selectedAiChatId)) setSelectedAiChatId(sessions[0].id)
+    if (selectedAiChatId !== NEW_AI_CHAT_ID && !sessions.length) setSelectedAiChatId('')
+  }
+
+  async function benchmarkAiTool(tool: AiToolState) {
+    const result = await run(`ai-benchmark-${tool.id}`, () => window.api.benchmarkAiTool(tool.id))
+    if (!result) return
+    setAiBenchmarks(prev => ({ ...prev, [tool.id]: result }))
+    setAiMessage(result.ok
+      ? `${tool.label} benchmark: ${result.rating} · ${formatMs(result.elapsedMs)}`
+      : `${tool.label} benchmark tamamlanamadı: ${result.message}`)
+  }
+
+  async function installAiTool(tool: AiToolState, mode: 'install' | 'repair' = 'install') {
+    if (isManagedInstallUnavailable(tool)) {
+      const message = managedInstallUnavailableMessage(tool)
+      setError(message)
+      setAiMessage(message)
+      return
+    }
+
+    const existing = activeInstallByTool.get(tool.id) ?? activeRepairByTool.get(tool.id)
+    if (existing) {
+      setAiMessage(`${tool.label} işlemi zaten çalışıyor. Mevcut job takip ediliyor.`)
+      setAiJobs(prev => mergeAiJobs([existing], prev))
+      return
+    }
+
+    setAiMessage(mode === 'repair' ? `${tool.label} onarımı başlatılıyor...` : `${tool.label} kurulumu başlatılıyor...`)
+    const result = await run(`ai-install-${tool.id}`, () => window.api.installAiTool(tool.id))
+    if (!result) return
+
+    setAiMessage(result.existing ? `${tool.label} işlemi zaten çalışıyor. Mevcut job takip ediliyor.` : `${tool.label} ${mode === 'repair' ? 'onarımı' : 'kurulumu'} çalışıyor. İlerleme aşağıdaki job panelinde görünecek.`)
+    await window.api.listAiJobs().then(next => {
+      setAiJobs(prev => mergeAiJobs(next, prev.filter(job => job.id !== result.jobId)))
+    }).catch(() => {})
+  }
+
+  async function installAiModel(model: AiChatModel) {
+    const tool = state.aiTools.find(item => item.id === 'ollama')
+    const existing = activeInstallByTool.get('ollama') ?? activeRepairByTool.get('ollama')
+    if (existing) {
+      setAiMessage(`Ollama işlemi zaten çalışıyor. Mevcut job takip ediliyor.`)
+      setAiJobs(prev => mergeAiJobs([existing], prev))
+      return
+    }
+    if (model.installed) {
+      setAiMessage(`${model.id} modeli zaten kurulu.`)
+      return
+    }
+
+    setAiMessage(`${model.id} modeli indiriliyor...`)
+    const result = await run(`ai-model-install-${model.id}`, () => window.api.installAiModel(model.id))
+    if (!result) return
+    if (tool && !tool.enabled) {
+      await window.api.setAiTools(state.aiTools.map(item => item.id === 'ollama' ? { ...item, enabled: true, installApproved: true } : item)).catch(() => state.aiTools)
+    }
+    setAiMessage(result.existing ? 'Ollama kurulumu zaten çalışıyor. Mevcut job takip ediliyor.' : `${model.id} kurulumu çalışıyor. İlerleme job panelinde görünecek.`)
+    await Promise.all([
+      window.api.listAiJobs().then(next => setAiJobs(prev => mergeAiJobs(next, prev))).catch(() => {}),
+      refreshAiStatus().catch(() => {}),
+      refreshAiChat().catch(() => {})
+    ])
+  }
+
+  async function installAllAiModels() {
+    const existing = activeInstallByTool.get('ollama') ?? activeRepairByTool.get('ollama')
+    if (existing) {
+      setAiMessage('Ollama işlemi zaten çalışıyor. Mevcut job takip ediliyor.')
+      setAiJobs(prev => mergeAiJobs([existing], prev))
+      return
+    }
+
+    setAiMessage('Tüm Ollama modelleri indiriliyor...')
+    const result = await run('ai-model-install-all', () => window.api.installAllAiModels())
+    if (!result) return
+    setAiMessage(result.existing ? 'Ollama kurulumu zaten çalışıyor. Mevcut job takip ediliyor.' : 'Tüm model kurulumu çalışıyor. İlerleme job panelinde görünecek.')
+    await Promise.all([
+      window.api.listAiJobs().then(next => setAiJobs(prev => mergeAiJobs(next, prev))).catch(() => {}),
+      refreshAiStatus().catch(() => {}),
+      refreshAiChat().catch(() => {})
+    ])
+  }
+
+  async function repairAiTool(tool: AiToolState) {
+    if (isManagedInstallUnavailable(tool)) {
+      const message = managedInstallUnavailableMessage(tool)
+      setError(message)
+      setAiMessage(message)
+      return
+    }
+
+    const existing = activeRepairByTool.get(tool.id) ?? activeInstallByTool.get(tool.id)
+    if (existing) {
+      setAiMessage(`${tool.label} onarımı zaten çalışıyor. Mevcut job takip ediliyor.`)
+      setAiJobs(prev => mergeAiJobs([existing], prev))
+      return
+    }
+
+    setAiMessage(`${tool.label} teşhis ve onarım başlatılıyor...`)
+    const result = await run(`ai-repair-${tool.id}`, () => window.api.repairAiTool(tool.id))
+    if (result) {
+      setAiMessage(result.existing ? `${tool.label} işlemi zaten çalışıyor. Mevcut job takip ediliyor.` : `${tool.label} onarımı çalışıyor. Eksik/bozuk parça varsa sadece o parça düzeltilecek.`)
+      await window.api.listAiJobs().then(next => setAiJobs(prev => mergeAiJobs(next, prev))).catch(() => {})
+    }
+  }
+
+  async function removeAiTool(tool: AiToolState) {
+    const existing = activeRemoveByTool.get(tool.id)
+    if (existing) {
+      setAiMessage(`${tool.label} model kaldırma zaten çalışıyor. Mevcut job takip ediliyor.`)
+      setAiJobs(prev => mergeAiJobs([existing], prev))
+      return
+    }
+
+    const ok = window.confirm(`${tool.label} model verileri kaldırılacak. Araç daha sonra tekrar indirilebilir. Devam edilsin mi?`)
+    if (!ok) return
+
+    setAiMessage(`${tool.label} model kaldırma başlatılıyor...`)
+    const pendingId = `pending-remove-${tool.id}-${Date.now()}`
+    const pendingJob: AiJob = {
+      id: pendingId,
+      kind: 'remove',
+      title: `${tool.label} model kaldırma`,
+      status: 'running',
+      percent: null,
+      message: 'Main process job başlatılıyor...',
+      toolId: tool.id,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    }
+    setAiJobs(prev => [pendingJob, ...prev].slice(0, 80))
+
+    const result = await run(`ai-remove-${tool.id}`, () => window.api.removeAiTool(tool.id))
+    if (result) {
+      setAiMessage(result.existing ? `${tool.label} model kaldırma zaten çalışıyor. Mevcut job takip ediliyor.` : `${tool.label} model kaldırma çalışıyor. İlerleme job panelinde görünecek.`)
+      await window.api.listAiJobs().then(next => {
+        setAiJobs(prev => mergeAiJobs(next, prev.filter(job => job.id !== pendingId && job.id !== result.jobId)))
+      }).catch(() => {})
+      return
+    }
+
+    setAiJobs(prev => prev.map(job => job.id === pendingId ? {
+      ...job,
+      status: 'error',
+      message: '',
+      error: 'Model kaldırma job’u başlatılamadı. Üstteki hata mesajını kontrol edin.',
+      updatedAt: Date.now()
+    } : job))
+  }
+
+  async function pauseAiJob(job: AiJob) {
+    await run(`ai-pause-${job.id}`, () => window.api.pauseAiJob(job.id))
+  }
+
+  async function resumeAiJob(job: AiJob) {
+    await run(`ai-resume-${job.id}`, () => window.api.resumeAiJob(job.id))
+  }
+
   async function toggleAi(tool: AiToolState) {
     const enabled = !tool.enabled
+    if (enabled && isManagedInstallUnavailable(tool)) {
+      const message = managedInstallUnavailableMessage(tool)
+      setError(message)
+      setAiMessage(message)
+      return
+    }
+
     const nextTool = { ...tool, enabled }
     if (enabled && !tool.installApproved) {
       const ok = window.confirm(`${tool.label} ücretsiz local çalışır ama model/paket indirir (${tool.sizeHint}). Şimdi izin vermezsen AI özellikleri kapalı kalır; sonra buradan açabilirsin.`)
@@ -271,6 +645,287 @@ export function ProductHub({
     }
     const next = state.aiTools.map(item => item.id === tool.id ? nextTool : item)
     await run(`ai-${tool.id}`, () => window.api.setAiTools(next))
+    if (enabled && !tool.installed) await installAiTool(nextTool)
+  }
+
+  async function startAiAction(kind: AiActionKind) {
+    if (!selectedAiItem?.outputPath) {
+      setError('AI işlemi için tamamlanmış local dosya seçin.')
+      return
+    }
+    await run(`ai-job-${kind}`, () => window.api.startAiJob({
+      kind,
+      inputPath: selectedAiItem.outputPath!,
+      title: itemTitle(selectedAiItem)
+    }))
+  }
+
+  async function sendAiChat() {
+    const message = aiChatInput.trim()
+    if (!message || selectedAiChatBusy) return
+    const model = aiChatModel || aiChatModels[0]?.id || 'qwen3.5:9b'
+    const requestSessionId = selectedAiChat?.id
+    const optimisticId = requestSessionId ?? `draft-chat-${Date.now()}`
+    const now = Date.now()
+    const userMessage: AiChatSession['messages'][number] = {
+      id: `draft-user-${now}`,
+      role: 'user',
+      content: message,
+      createdAt: now,
+      model
+    }
+    const pendingMessage: AiChatSession['messages'][number] = {
+      id: `draft-assistant-${now}`,
+      role: 'assistant',
+      content: isAiActionPrompt(message)
+        ? 'Komut alındı. Dosya ve kurulum durumu kontrol ediliyor...'
+        : 'Mesaj alındı. Local model hazırlanıyor; ilk yanıtta bu biraz sürebilir...',
+      createdAt: now + 1,
+      model
+    }
+    const optimisticSession: AiChatSession = {
+      id: optimisticId,
+      title: selectedAiChat?.title ?? (message.slice(0, 48) || 'Yeni Sohbet'),
+      model,
+      attachmentPath: selectedChatItem?.outputPath ?? selectedAiChat?.attachmentPath,
+      attachmentTitle: selectedChatItem ? itemTitle(selectedChatItem) : selectedAiChat?.attachmentTitle,
+      messages: [...(selectedAiChat?.messages ?? []), userMessage, pendingMessage],
+      createdAt: selectedAiChat?.createdAt ?? now,
+      updatedAt: now
+    }
+
+    setAiChatPending([optimisticId, requestSessionId ?? ''], true)
+    setError('')
+    setAiChatInput('')
+    setSelectedAiChatId(optimisticId)
+    setAiChatSessions(prev => upsertChatSessionStable(prev, optimisticSession))
+    try {
+      const result = await window.api.sendAiChatMessage({
+        sessionId: requestSessionId,
+        message,
+        model,
+        attachmentPath: selectedChatItem?.outputPath,
+        attachmentTitle: selectedChatItem ? itemTitle(selectedChatItem) : undefined
+      })
+      if (result.removed) {
+        const sessions = await window.api.listAiChatSessions()
+        setAiChatSessions(sessions)
+        return
+      }
+      setSelectedAiChatId(result.session.id)
+      const sessions = await window.api.listAiChatSessions()
+      setAiChatSessions(sessions)
+      if (result.action) {
+        await window.api.listAiJobs().then(setAiJobs).catch(() => {})
+      }
+    } catch (err) {
+      const friendly = userFriendlyError(err, 'ai-chat-send')
+      setError(friendly)
+      setAiChatSessions(prev => upsertChatSessionStable(prev, {
+        ...optimisticSession,
+        messages: [
+          ...optimisticSession.messages.slice(0, -1),
+          {
+            ...pendingMessage,
+            content: friendly
+          }
+        ],
+        updatedAt: Date.now()
+      }))
+      logClientError(err, 'ai-chat-send', friendly)
+    } finally {
+      setAiChatPending([optimisticId, requestSessionId ?? ''], false)
+    }
+  }
+
+  async function newAiChat() {
+    setSelectedAiChatId(NEW_AI_CHAT_ID)
+    setAiChatInput('')
+  }
+
+  async function deleteAiChat(sessionId: string) {
+    const next = await run(`ai-chat-delete-${sessionId}`, () => window.api.deleteAiChatSession(sessionId))
+    if (!next) return
+    setAiChatSessions(next)
+    if (selectedAiChatId === sessionId) setSelectedAiChatId(next[0]?.id ?? NEW_AI_CHAT_ID)
+  }
+
+  async function clearAiChat() {
+    const next = await run('ai-chat-clear', () => window.api.clearAiChatSessions())
+    if (!next) return
+    setAiChatSessions(next)
+    setSelectedAiChatId(NEW_AI_CHAT_ID)
+    setAiChatInput('')
+  }
+
+  async function retryAiJob(job: AiJob) {
+    if (job.kind === 'install' && job.toolId) {
+      const tool = state.aiTools.find(item => item.id === job.toolId)
+      if (tool) await installAiTool(tool)
+      return
+    }
+    if (job.kind === 'repair' && job.toolId) {
+      const tool = state.aiTools.find(item => item.id === job.toolId)
+      if (tool) await repairAiTool(tool)
+      return
+    }
+    if (job.kind === 'remove' && job.toolId) {
+      const tool = state.aiTools.find(item => item.id === job.toolId)
+      if (tool) await removeAiTool(tool)
+      return
+    }
+    if (!job.inputPath || !isAiActionKind(job.kind)) return
+    const kind = job.kind
+    await run(`ai-retry-${job.id}`, () => window.api.startAiJob({
+      kind,
+      inputPath: job.inputPath!,
+      title: job.title
+    }))
+  }
+
+  async function runRecipe() {
+    if (!selectedAutomationItem?.outputPath || !selectedRecipe) {
+      setError('Otomasyon için tamamlanmış bir dosya ve iş akışı seçin.')
+      return
+    }
+
+    const result = await run('recipe-run', async () => {
+      const started: PostProcessRecipe['steps'] = []
+      const skipped: PostProcessRecipe['steps'] = []
+
+      for (const step of selectedRecipe.steps) {
+        const ok = await runRecipeStep(step, selectedRecipe, selectedAutomationItem, started, skipped)
+        if (!ok) skipped.push(step)
+      }
+
+      return { started, skipped }
+    })
+
+    if (result) {
+      const startedText = result.started.length ? `Başlatıldı: ${result.started.map(recipeStepLabel).join(', ')}` : 'Başlatılan adım yok.'
+      const skippedText = result.skipped.length ? ` Atlandı: ${Array.from(new Set(result.skipped)).map(recipeStepLabel).join(', ')}` : ''
+      setAutomationMessage(startedText + skippedText)
+    }
+  }
+
+  async function deleteAiJob(job: AiJob) {
+    if (!hasAiHistoryApi('deleteAiJob')) {
+      setError('AI geçmişi silme servisi henüz yüklenmemiş. DropMedia uygulamasını tamamen kapatıp yeniden açın, sonra tekrar deneyin.')
+      return
+    }
+    setBusy(prev => ({ ...prev, [`ai-delete-${job.id}`]: true }))
+    setError('')
+    try {
+      const next = await window.api.deleteAiJob(job.id)
+      setAiJobs(next)
+      setAiMessage('AI job kaydı silindi.')
+    } catch (err) {
+      const friendly = userFriendlyError(err, `ai-delete-${job.id}`)
+      setError(friendly)
+      logClientError(err, `ai-delete-${job.id}`, friendly)
+    } finally {
+      setBusy(prev => ({ ...prev, [`ai-delete-${job.id}`]: false }))
+    }
+  }
+
+  async function clearAiJobs() {
+    if (!hasAiHistoryApi('clearAiJobs')) {
+      setError('AI geçmişi temizleme servisi henüz yüklenmemiş. DropMedia uygulamasını tamamen kapatıp yeniden açın, sonra tekrar deneyin.')
+      return
+    }
+    setBusy(prev => ({ ...prev, 'ai-clear-jobs': true }))
+    setError('')
+    try {
+      const next = await window.api.clearAiJobs()
+      setAiJobs(next)
+      setAiMessage(next.length ? 'Biten AI job kayıtları temizlendi; çalışan işler korundu.' : 'AI job geçmişi temizlendi.')
+    } catch (err) {
+      const friendly = userFriendlyError(err, 'ai-clear-jobs')
+      setError(friendly)
+      logClientError(err, 'ai-clear-jobs', friendly)
+    } finally {
+      setBusy(prev => ({ ...prev, 'ai-clear-jobs': false }))
+    }
+  }
+
+  async function runRecipeStep(
+    step: PostProcessRecipe['steps'][number],
+    recipe: PostProcessRecipe,
+    item: DownloadItem,
+    started: string[],
+    skipped: string[]
+  ): Promise<boolean> {
+    const inputPath = item.outputPath
+    if (!inputPath) return false
+    const title = itemTitle(item)
+
+    if (step === 'metadata' || step === 'thumbnail') {
+      if (!onRepairMediaMetadata) return false
+      await onRepairMediaMetadata(item.id)
+      started.push(step)
+      return true
+    }
+
+    if (step === 'transcript') {
+      await window.api.startAiJob({ kind: 'transcript', inputPath, title })
+      started.push(step)
+      return true
+    }
+
+    if (step === 'compress') {
+      if (!onStartConvert) return false
+      await onStartConvert({
+        inputPath,
+        outputPath: derivativePath(inputPath, 'compressed', 'mp4'),
+        outputFormat: recipe.format ?? 'mp4',
+        title
+      })
+      started.push(step)
+      return true
+    }
+
+    if (step === 'subtitle-save' || step === 'subtitle-soft' || step === 'subtitle-burn') {
+      if (!onStartSubtitle) return false
+      const mode = step === 'subtitle-save' ? 'save' : step === 'subtitle-soft' ? 'soft' : 'burn'
+      const ext = mode === 'save' ? 'srt' : 'mp4'
+      const suffix = mode === 'save' ? 'subs' : mode === 'soft' ? 'softsubs' : 'burnedsubs'
+      const cookieBrowser = await window.api.getSetting('cookieBrowser').catch(() => undefined) as string | undefined
+      await onStartSubtitle({
+        inputPath,
+        outputPath: derivativePath(inputPath, suffix, ext),
+        mode,
+        style: DEFAULT_SUBTITLE_STYLE,
+        url: item.url,
+        lang: 'auto',
+        cookieBrowser,
+        title
+      })
+      started.push(step)
+      return true
+    }
+
+    if (step === 'audio-normalize') {
+      if (!onStartNormalize) return false
+      await onStartNormalize({
+        inputPath,
+        outputPath: derivativePath(inputPath, 'normalized', outputExtension(inputPath, recipe.format)),
+        title
+      })
+      started.push(step)
+      return true
+    }
+
+    return false
+  }
+
+  async function setAutoRecipe(enabled: boolean) {
+    setAutoRecipeEnabled(enabled)
+    await run('automation-auto-toggle', () => window.api.setSetting('automationAutoRecipe', enabled))
+  }
+
+  async function setAutoRecipeSelection(recipeId: string) {
+    setAutoRecipeId(recipeId)
+    await run('automation-auto-recipe', () => window.api.setSetting('automationAutoRecipeId', recipeId))
   }
 
   return (
@@ -288,7 +943,7 @@ export function ProductHub({
       </div>
 
       <div className="grid gap-3 md:grid-cols-4">
-        <Metric label="Inbox" value={state.inbox.length} sub={`${inboxReady} hazır`} />
+        <Metric label="Linkler" value={state.inbox.length} sub={`${inboxReady} hazır`} />
         <Metric label="Takip" value={state.watchSources.length} sub={`${newWatchItems} yeni`} />
         <Metric label="Kütüphane" value={completed.length + state.library.length} sub="local kayıt" />
         <Metric label="AI" value={state.aiTools.filter(t => t.enabled).length} sub="opsiyonel local" />
@@ -307,7 +962,7 @@ export function ProductHub({
               {syncStatus.signedIn ? (
                 <div>
                   <p className="text-sm text-white/75">Giriş: {syncStatus.email}</p>
-                  <p className="text-xs text-white/35">Inbox, takip kaynakları, recipe, AI ayarları ve kütüphane state'i manuel push/pull yapılır.</p>
+                  <p className="text-xs text-white/35">Linkler, takip kaynakları, otomasyon akışları, AI ayarları ve kütüphane kayıtları manuel yedeklenip geri alınır.</p>
                 </div>
               ) : (
                 <div className="grid gap-2 md:grid-cols-2">
@@ -473,56 +1128,430 @@ export function ProductHub({
         </Panel>
       </section>}
 
-      {view === 'automation' && <section className="grid gap-4 lg:grid-cols-2">
+      {view === 'automation' && <section className="grid gap-4 xl:grid-cols-[.85fr_.9fr_1.15fr]">
         <Panel title="Akıllı Profiller" action={`${state.smartProfiles.length} preset`}>
           <div className="space-y-2">
             {state.smartProfiles.map(profile => (
               <div key={profile.id} className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm font-medium text-white/85">{profile.name}</p>
-                  <span className="rounded-md bg-violet-500/15 px-2 py-1 text-[10px] text-violet-200">{profile.format}</span>
+                  <span className="rounded-md bg-violet-500/15 px-2 py-1 text-[10px] text-violet-200">{formatLabel(profile.format)}</span>
                 </div>
-                <p className="mt-1 truncate font-mono text-[11px] text-white/35">{profile.filenameTemplate}</p>
+                <p className="mt-1 text-xs text-white/45">{smartProfileSummary(profile, recipeById.get(profile.recipeId ?? ''))}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <Chip>{platformLabel(profile.platform)}</Chip>
+                  <Chip>{subtitleModeLabel(profile.subtitleMode)}</Chip>
+                  {profile.recipeId && <Chip>{recipeById.get(profile.recipeId)?.name ?? 'İş akışı'}</Chip>}
+                </div>
               </div>
             ))}
           </div>
         </Panel>
 
-        <Panel title="Recipe Zinciri" action={`${state.recipes.length} akış`}>
+        <Panel title="Hazır İş Akışları" action={`${state.recipes.length} otomasyon`}>
           <div className="space-y-2">
             {state.recipes.map(recipe => (
               <div key={recipe.id} className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
                 <p className="text-sm font-medium text-white/85">{recipe.name}</p>
                 <p className="mt-1 text-xs text-white/45">{recipe.description}</p>
                 <div className="mt-2 flex flex-wrap gap-1">
-                  {recipe.steps.map(step => <span key={step} className="rounded-md bg-white/8 px-2 py-1 text-[10px] text-white/45">{step}</span>)}
+                  {recipe.steps.map(step => <span key={step} className="rounded-md bg-white/8 px-2 py-1 text-[10px] text-white/45">{recipeStepLabel(step)}</span>)}
                 </div>
               </div>
             ))}
           </div>
         </Panel>
+
+        <Panel title="Otomasyonu Çalıştır" action={completedWithFiles.length ? `${completedWithFiles.length} dosya` : 'dosya yok'}>
+          <div className="space-y-3">
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <label className="flex cursor-pointer items-center justify-between gap-3">
+                <span>
+                  <span className="block text-sm font-medium text-white/80">İndirme bitince otomatik işlem yap</span>
+                  <span className="mt-1 block text-xs text-white/35">Kapalıysa işlemler sadece buradan manuel başlatılır.</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={autoRecipeEnabled}
+                  onChange={(event) => setAutoRecipe(event.target.checked)}
+                  className="h-4 w-4 accent-violet-500"
+                />
+              </label>
+              <select
+                value={autoRecipeId}
+                onChange={(event) => setAutoRecipeSelection(event.target.value)}
+                className="mt-3 w-full rounded-xl border border-white/8 bg-[#111116] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
+              >
+                <option value="">Dosyanın akıllı profiline göre seç</option>
+                {state.recipes.map(recipe => (
+                  <option key={recipe.id} value={recipe.id}>{recipe.name}</option>
+                ))}
+              </select>
+            </div>
+            <select
+              value={selectedAutomationItem?.id ?? ''}
+              onChange={(event) => setSelectedAutomationItemId(event.target.value)}
+              className="w-full rounded-xl border border-white/8 bg-[#111116] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
+            >
+              {completedWithFiles.map(item => (
+                <option key={item.id} value={item.id}>{itemTitle(item)}</option>
+              ))}
+            </select>
+            <select
+              value={selectedRecipe?.id ?? ''}
+              onChange={(event) => setSelectedRecipeId(event.target.value)}
+              className="w-full rounded-xl border border-white/8 bg-[#111116] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
+            >
+              {state.recipes.map(recipe => (
+                <option key={recipe.id} value={recipe.id}>{recipe.name}</option>
+              ))}
+            </select>
+            {selectedRecipe && (
+              <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+                <p className="text-xs text-white/45">{selectedRecipe.description}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {selectedRecipe.steps.map(step => <Chip key={step}>{recipeStepLabel(step)}</Chip>)}
+                </div>
+              </div>
+            )}
+            <button
+              onClick={runRecipe}
+              disabled={!selectedAutomationItem || !selectedRecipe || busy['recipe-run']}
+              className="primary-btn w-full"
+            >
+              İş Akışını Başlat
+            </button>
+            {automationMessage && <p className="text-xs text-emerald-300/80">{automationMessage}</p>}
+            <p className="text-[11px] leading-relaxed text-white/30">
+              Seçilen iş akışı dosyayı paylaşmaya veya arşive hazır hale getirmek için kapak/süre onarımı, altyazı, sıkıştırma, ses düzeltme veya transcript işlemlerini sırayla başlatır.
+            </p>
+          </div>
+        </Panel>
       </section>}
 
-      {view === 'ai' && <Panel title="Local AI" action="ücretsiz / opsiyonel">
+      {view === 'ai' && <section className="grid gap-4 xl:grid-cols-[minmax(300px,1fr)_minmax(300px,1fr)_minmax(420px,1.05fr)]">
+        <Panel title="Local AI Araçları" action="ücretsiz / opsiyonel">
           <div className="space-y-2">
+            {aiMessage && (
+              <div className="rounded-xl border border-violet-500/20 bg-violet-500/10 px-3 py-2 text-xs text-violet-100">
+                {aiMessage}
+              </div>
+            )}
+            {activeInstallJobs.length > 0 && (
+              <div className="space-y-2 rounded-xl border border-violet-500/20 bg-[#111116] p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-violet-200/80">Aktif Kurulum / Onarım</p>
+                {activeInstallJobs.map(job => (
+                  <InlineAiProgress
+                    key={job.id}
+                    job={job}
+                    onCancel={() => window.api.cancelAiJob(job.id).catch(() => {})}
+                    onPause={() => pauseAiJob(job)}
+                    onResume={() => resumeAiJob(job)}
+                  />
+                ))}
+              </div>
+            )}
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-white/85">Önerilen Sistem</p>
+                  <p className="mt-1 text-xs text-white/35">PC özellikleri ve yanıt süresi testleri ayrı ekranda.</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowAiSystemPanel(true)
+                    refreshAiSystemReport().catch(err => setError(userFriendlyError(err, 'ai-system-report')))
+                  }}
+                  className="secondary-btn shrink-0"
+                >
+                  Aç
+                </button>
+              </div>
+            </div>
             {state.aiTools.map(tool => (
-              <button
+              <div
                 key={tool.id}
-                onClick={() => toggleAi(tool)}
-                className="w-full rounded-xl border border-white/8 bg-white/[0.03] p-3 text-left transition-colors hover:bg-white/[0.06]"
+                className="rounded-xl border border-white/8 bg-white/[0.03] p-3"
               >
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm font-medium text-white/85">{tool.label}</p>
-                  <span className={`rounded-full px-2 py-1 text-[10px] ${tool.enabled ? 'bg-emerald-500/15 text-emerald-200' : 'bg-white/8 text-white/35'}`}>
-                    {tool.enabled ? 'Açık' : 'Kapalı'}
-                  </span>
+                  <div className="flex gap-1">
+                    <span className={`rounded-full px-2 py-1 text-[10px] ${tool.installed ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-100'}`}>
+                      {tool.installed ? 'Kurulu' : 'Kurulu değil'}
+                    </span>
+                    <span className={`rounded-full px-2 py-1 text-[10px] ${tool.enabled ? 'bg-violet-500/15 text-violet-200' : 'bg-white/8 text-white/35'}`}>
+                      {tool.enabled ? 'Açık' : 'Kapalı'}
+                    </span>
+                  </div>
                 </div>
                 <p className="mt-1 text-xs text-white/45">{tool.description}</p>
                 <p className="mt-1 text-[11px] text-white/30">Model/paket: {tool.sizeHint}</p>
-              </button>
+                {tool.statusDetail && <p className="mt-1 text-[11px] text-white/35">Durum: {tool.statusDetail}</p>}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button onClick={() => toggleAi(tool)} disabled={busy[`ai-${tool.id}`] || busy[`ai-install-${tool.id}`] || activeInstallByTool.has(tool.id) || activeRepairByTool.has(tool.id)} className="secondary-btn">
+                    {tool.enabled ? 'Kapat' : 'Aç'}
+                  </button>
+                  <button onClick={() => installAiTool(tool)} disabled={tool.installed || busy[`ai-install-${tool.id}`] || activeInstallByTool.has(tool.id) || activeRepairByTool.has(tool.id)} className="primary-btn">
+                    {activeInstallByTool.has(tool.id) ? 'Kuruluyor' : activeRepairByTool.has(tool.id) ? 'Onarılıyor' : 'Kur / Hazırla'}
+                  </button>
+                  <button onClick={() => repairAiTool(tool)} disabled={busy[`ai-repair-${tool.id}`] || activeInstallByTool.has(tool.id) || activeRepairByTool.has(tool.id)} className="secondary-btn">
+                    {activeRepairByTool.has(tool.id) ? 'Onarılıyor' : activeInstallByTool.has(tool.id) ? 'Çalışıyor' : 'Onar'}
+                  </button>
+                  <button onClick={() => removeAiTool(tool)} disabled={busy[`ai-remove-${tool.id}`] || activeRemoveByTool.has(tool.id)} className="danger-btn">
+                    {activeRemoveByTool.has(tool.id) ? 'Kaldırılıyor' : 'Modeli Kaldır'}
+                  </button>
+                </div>
+              </div>
             ))}
+            <button onClick={refreshAiStatus} className="secondary-btn w-full">Kurulum Durumunu Yenile</button>
           </div>
-        </Panel>}
+        </Panel>
+
+        <Panel title="Dosya Aksiyonları" action={selectedAiItem ? 'hazır' : 'dosya yok'}>
+          <div className="space-y-3">
+            <select
+              value={selectedAiItem?.id ?? ''}
+              onChange={(event) => setSelectedAiItemId(event.target.value)}
+              className="w-full rounded-xl border border-white/8 bg-[#111116] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
+            >
+              {completedWithFiles.map(item => (
+                <option key={item.id} value={item.id}>{itemTitle(item)}</option>
+              ))}
+            </select>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button onClick={() => startAiAction('transcript')} disabled={!selectedAiItem || busy['ai-job-transcript']} className="primary-btn">Transcript</button>
+              <button onClick={() => startAiAction('summary')} disabled={!selectedAiItem || busy['ai-job-summary']} className="secondary-btn">Özet</button>
+              <button onClick={() => startAiAction('titles')} disabled={!selectedAiItem || busy['ai-job-titles']} className="secondary-btn">Başlık / Etiket</button>
+              <button onClick={() => startAiAction('translate')} disabled={!selectedAiItem || busy['ai-job-translate']} className="secondary-btn">TR Çeviri</button>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3 text-xs leading-relaxed text-white/40">
+              Özet, başlık ve çeviri için önce transcript gerekir. Çıktılar indirilen dosyanın yanına `.transcript.txt`, `.summary.md`, `.titles.md` veya `.tr.txt` olarak yazılır.
+            </div>
+          </div>
+        </Panel>
+
+        <Panel
+          title="AI Job Geçmişi"
+          action={
+            historyAiJobs.length > 0
+              ? <button onClick={clearAiJobs} disabled={busy['ai-clear-jobs']} className="secondary-btn py-1 text-[11px]">Geçmişi Temizle</button>
+              : '0 kayıt'
+          }
+        >
+          <div className="max-h-[460px] space-y-2 overflow-y-auto pr-1 scrollbar-thin">
+            {historyAiJobs.map(job => (
+              <AiJobRow
+                key={job.id}
+                job={job}
+                onCancel={() => window.api.cancelAiJob(job.id).catch(() => {})}
+                onPause={() => pauseAiJob(job)}
+                onResume={() => resumeAiJob(job)}
+                onRetry={() => retryAiJob(job)}
+                onShow={() => job.outputPath && window.api.showItemInFolder(job.outputPath)}
+                onDelete={() => deleteAiJob(job)}
+              />
+            ))}
+            {historyAiJobs.length === 0 && <Empty text="Biten, iptal edilen veya hata alan AI işleri burada görünür. Aktif kurulumlar soldaki panelde takip edilir." />}
+          </div>
+        </Panel>
+      </section>}
+
+      {view === 'ai-chat' && <section className="grid min-h-[620px] gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
+        <Panel
+          title="Sohbetler"
+          action={
+            <button onClick={newAiChat} className="text-white/70 transition hover:text-white">Yeni</button>
+          }
+        >
+          <div className="space-y-3">
+            <button onClick={newAiChat} className="primary-btn w-full">Yeni Sohbet</button>
+            <div className="max-h-[500px] space-y-2 overflow-y-auto pr-1 scrollbar-thin">
+              {aiChatSessions.map(session => (
+                <button
+                  key={session.id}
+                  onClick={() => setSelectedAiChatId(session.id)}
+                  className={`w-full rounded-xl border p-3 text-left transition ${selectedAiChat?.id === session.id ? 'border-violet-500/35 bg-violet-500/10' : 'border-white/8 bg-white/[0.03] hover:bg-white/[0.05]'}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="line-clamp-2 text-sm font-medium text-white/85">{session.title}</p>
+                    <span className="shrink-0 rounded-md bg-white/8 px-2 py-1 text-[10px] text-white/35">{session.messages.length}</span>
+                  </div>
+                  <p className="mt-2 line-clamp-2 text-xs text-white/35">{chatPreview(session)}</p>
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-white/25">
+                    <span className="truncate">{session.model}</span>
+                    <span>{relativeTime(session.updatedAt)}</span>
+                  </div>
+                </button>
+              ))}
+              {aiChatSessions.length === 0 && <Empty text="Henüz sohbet yok. Mesaj yazınca ilk kayıt oluşur." />}
+            </div>
+            {aiChatSessions.length > 0 && (
+              <button onClick={clearAiChat} disabled={busy['ai-chat-clear']} className="danger-btn w-full">
+                Sohbetleri Temizle
+              </button>
+            )}
+          </div>
+        </Panel>
+
+        <div className="min-w-0 overflow-hidden rounded-2xl border border-white/8 bg-[#111116]">
+          <div className="flex items-center justify-between gap-3 border-b border-white/8 px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-violet-200/70">Local AI Chat</p>
+              <h2 className="mt-1 truncate text-lg font-semibold text-white">{selectedAiChat?.title ?? 'Yeni Sohbet'}</h2>
+            </div>
+            {selectedAiChat && (
+              <button onClick={() => deleteAiChat(selectedAiChat.id)} className="danger-btn shrink-0 py-1 text-[11px]">
+                Sil
+              </button>
+            )}
+          </div>
+
+          <div className="grid min-h-[560px] grid-rows-[1fr_auto]">
+            <div className="space-y-4 overflow-y-auto p-4 scrollbar-thin">
+              {selectedAiChat?.messages.map(message => (
+                <AiChatBubble key={message.id} message={message} />
+              ))}
+              {!selectedAiChat?.messages.length && (
+                <div className="mx-auto flex min-h-[320px] max-w-xl flex-col items-center justify-center text-center">
+                  <div className="rounded-2xl border border-violet-500/20 bg-violet-500/10 px-4 py-3">
+                    <p className="text-sm font-medium text-white/85">Local modelle sohbet et</p>
+                    <p className="mt-1 text-xs leading-relaxed text-white/40">
+                      Genel soru sorabilir, sağ alttan dosya bağlayabilir veya transcript/özet/başlık/çeviri işlerini chat komutuyla başlatabilirsin.
+                    </p>
+                  </div>
+                  <div className="mt-4 grid w-full gap-2 sm:grid-cols-2">
+                    {[
+                      ['Transcript', 'Bu dosyanın transcriptini çıkar.'],
+                      ['Özet', 'Bu dosyayı özetle.'],
+                      ['Başlık', 'Bu dosya için başlık ve etiket üret.'],
+                      ['TR Çeviri', 'Bu dosyayı Türkçeye çevir.']
+                    ].map(([label, prompt]) => (
+                      <button
+                        key={label}
+                        onClick={() => setAiChatInput(prompt)}
+                        className="rounded-xl border border-white/8 bg-white/[0.04] px-3 py-2 text-sm text-white/70 transition hover:bg-white/[0.07] hover:text-white"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-white/8 bg-[#0F0F12]/95 p-4">
+              <div className="mb-3 grid gap-2 lg:grid-cols-[minmax(0,1fr)_220px]">
+                <select
+                  value={selectedChatItemId}
+                  onChange={(event) => setSelectedChatItemId(event.target.value)}
+                  className="w-full rounded-xl border border-white/8 bg-[#16161A] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
+                >
+                  <option value="">Dosya bağlama</option>
+                  {completedWithFiles.map(item => (
+                    <option key={item.id} value={item.id}>{itemTitle(item)}</option>
+                  ))}
+                </select>
+                <select
+                  value={aiChatModel}
+                  onChange={(event) => setAiChatModel(event.target.value)}
+                  className="w-full rounded-xl border border-white/8 bg-[#16161A] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
+                >
+                  {aiChatModels.map(model => (
+                    <option key={model.id} value={model.id}>{model.label}</option>
+                  ))}
+                </select>
+              </div>
+              {selectedAiChatModelInfo && <AiChatModelHint model={selectedAiChatModelInfo} />}
+              {selectedAiChatModelInfo && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => installAiModel(selectedAiChatModelInfo)}
+                    disabled={selectedAiChatModelInfo.installed || busy[`ai-model-install-${selectedAiChatModelInfo.id}`] || activeInstallByTool.has('ollama') || activeRepairByTool.has('ollama')}
+                    className="primary-btn py-1 text-[11px]"
+                  >
+                    {selectedAiChatModelInfo.installed ? 'Model Kurulu' : 'Seçili Modeli İndir'}
+                  </button>
+                  <button
+                    onClick={installAllAiModels}
+                    disabled={busy['ai-model-install-all'] || activeInstallByTool.has('ollama') || activeRepairByTool.has('ollama')}
+                    className="secondary-btn py-1 text-[11px]"
+                  >
+                    Tüm Modelleri İndir
+                  </button>
+                </div>
+              )}
+
+              {selectedChatItem && (
+                <div className="mb-3 rounded-xl border border-violet-500/20 bg-violet-500/10 px-3 py-2 text-xs text-violet-100/80">
+                  Bağlı dosya: {itemTitle(selectedChatItem)}
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-white/8 bg-[#16161A] p-2">
+                <textarea
+                  value={aiChatInput}
+                  onChange={(event) => setAiChatInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      sendAiChat()
+                    }
+                  }}
+                  placeholder="Mesaj yaz... Örn: Bu dosyayı özetle veya bu videoda ne anlatılıyor?"
+                  className="min-h-24 w-full resize-none bg-transparent px-2 py-2 text-sm text-white outline-none placeholder:text-white/25"
+                />
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-2">
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => setAiChatInput('Bu dosyanın transcriptini çıkar.')} className="secondary-btn py-1 text-[11px]">Transcript</button>
+                    <button onClick={() => setAiChatInput('Bu dosyayı özetle.')} className="secondary-btn py-1 text-[11px]">Özet</button>
+                    <button onClick={() => setAiChatInput('Bu dosya için başlık ve etiket üret.')} className="secondary-btn py-1 text-[11px]">Başlık</button>
+                    <button onClick={() => setAiChatInput('Bu dosyayı Türkçeye çevir.')} className="secondary-btn py-1 text-[11px]">Çeviri</button>
+                  </div>
+                  <button onClick={sendAiChat} disabled={!aiChatInput.trim() || selectedAiChatBusy} className="primary-btn min-w-24">
+                    {selectedAiChatBusy ? 'Yazıyor' : 'Gönder'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>}
+
+      {showAiSystemPanel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
+          <button
+            aria-label="Kapat"
+            onClick={() => setShowAiSystemPanel(false)}
+            className="absolute inset-0 cursor-default bg-black/70 backdrop-blur-md"
+          />
+          <div className="relative flex max-h-[86vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0F0F12]/95 shadow-2xl shadow-black/40 animate-slide-up">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-white/8 px-5 py-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-300/70">Local AI</p>
+                <h2 className="mt-1 text-lg font-semibold text-white">Önerilen Sistem ve Yanıt Testi</h2>
+                <p className="mt-1 text-xs text-white/35">Akıcı kullanım beklentisi, kurulum riski ve kurulu modeller için kısa performans testi.</p>
+              </div>
+              <button
+                onClick={() => setShowAiSystemPanel(false)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/8 text-white/45 transition hover:bg-white/12 hover:text-white"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
+              <SystemRequirementsPanel
+                report={aiSystemReport}
+                tools={state.aiTools}
+                benchmarks={aiBenchmarks}
+                activeBenchmarkByTool={activeBenchmarkByTool}
+                busy={busy}
+                onRefresh={() => refreshAiSystemReport().catch(err => setError(userFriendlyError(err, 'ai-system-report')))}
+                onBenchmark={benchmarkAiTool}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {view === 'library' && (
         <DownloadQueue
@@ -598,9 +1627,9 @@ function WatchSourceRow({ source, busy, onCheck, onToggle, onAction, onRemove }:
           <p className="truncate text-sm font-medium text-white/85">{source.label}</p>
           <p className="truncate font-mono text-[11px] text-white/35">{source.url}</p>
           <div className="mt-2 flex flex-wrap gap-1">
-            <Chip>{source.type}</Chip>
+            <Chip>{watchTypeLabel(source.type)}</Chip>
             <Chip>{source.intervalMinutes} dk</Chip>
-            <Chip>{source.action}</Chip>
+            <Chip>{watchActionLabel(source.action)}</Chip>
             {source.lastError && <Chip tone="bad">hata</Chip>}
           </div>
           {source.lastError && <p className="mt-2 text-xs text-red-300/80">{source.lastError}</p>}
@@ -639,7 +1668,287 @@ function WatchItemRow({ item, source, onQueue, onIgnore }: {
           <button onClick={onIgnore} className="secondary-btn">Yoksay</button>
         </div>
       </div>
-      <span className="rounded-md bg-white/8 px-2 py-1 text-[10px] text-white/40 h-fit">{item.status}</span>
+      <span className="rounded-md bg-white/8 px-2 py-1 text-[10px] text-white/40 h-fit">{watchItemStatusLabel(item.status)}</span>
+    </div>
+  )
+}
+
+function AiChatBubble({ message }: { message: AiChatSession['messages'][number] }) {
+  const user = message.role === 'user'
+  return (
+    <div className={`flex ${user ? 'justify-end' : 'justify-start'}`}>
+      <div className={`max-w-[82%] rounded-2xl border px-4 py-3 ${user ? 'border-violet-500/25 bg-violet-500/15' : 'border-white/8 bg-white/[0.04]'}`}>
+        <div className="mb-2 flex items-center justify-between gap-3 text-[10px] text-white/30">
+          <span className="font-semibold uppercase tracking-[0.08em]">{user ? 'Sen' : message.model ?? 'AI'}</span>
+          <span>{formatChatTime(message.createdAt)}</span>
+        </div>
+        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-white/75">{message.content}</p>
+      </div>
+    </div>
+  )
+}
+
+function chatPreview(session: AiChatSession): string {
+  const last = session.messages[session.messages.length - 1]
+  if (!last) return session.attachmentTitle ? `Dosya: ${session.attachmentTitle}` : 'Boş sohbet'
+  return last.content.replace(/\s+/g, ' ').trim()
+}
+
+function isAiActionPrompt(message: string): boolean {
+  const text = message.toLowerCase()
+  return /transkript|transcript|konuşma metni|özet|ozet|summary|summarize|başlık|baslik|etiket|hashtag|title|çevir|cevir|translate|türkçe|turkce/.test(text)
+}
+
+function formatChatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })
+}
+
+function SystemRequirementsPanel({
+  report,
+  tools,
+  benchmarks,
+  activeBenchmarkByTool,
+  busy,
+  onRefresh,
+  onBenchmark
+}: {
+  report: AiSystemReport | null
+  tools: AiToolState[]
+  benchmarks: Record<string, AiBenchmarkResult>
+  activeBenchmarkByTool: Map<string, AiJob>
+  busy: Record<string, boolean>
+  onRefresh: () => void
+  onBenchmark: (tool: AiToolState) => void
+}) {
+  const toolById = new Map(tools.map(tool => [tool.id, tool]))
+  return (
+    <div className="space-y-3 rounded-xl border border-white/8 bg-[#111116] p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-white/55">Önerilen Sistem</p>
+          <p className="mt-1 text-[11px] text-white/35">Akıcı local AI kullanımı için kısa uygunluk kontrolü.</p>
+        </div>
+        <button onClick={onRefresh} className="secondary-btn py-1 text-[11px]">Yenile</button>
+      </div>
+
+      {report ? (
+        <>
+          <div className="grid gap-1 text-[10px] text-white/35 sm:grid-cols-2">
+            <span className="rounded-md bg-white/[0.04] px-2 py-1">CPU: {report.specs.cpuThreads} thread</span>
+            <span className="rounded-md bg-white/[0.04] px-2 py-1">RAM: {formatBytes(report.specs.totalMemoryBytes)}</span>
+            <span className="rounded-md bg-white/[0.04] px-2 py-1">Boş RAM: {formatBytes(report.specs.freeMemoryBytes)}</span>
+            <span className="rounded-md bg-white/[0.04] px-2 py-1">Boş Disk: {formatBytes(report.specs.diskFreeBytes)}</span>
+          </div>
+
+          <div className="space-y-2">
+            {report.tools.map(item => {
+              const tool = toolById.get(item.toolId)
+              const benchmark = benchmarks[item.toolId]
+              const activeBenchmark = activeBenchmarkByTool.get(item.toolId)
+              const failed = item.checks.some(check => !check.ok)
+              return (
+                <div key={item.toolId} className="rounded-lg border border-white/8 bg-white/[0.03] p-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium text-white/80">{item.label}</p>
+                      <p className={`mt-0.5 text-[10px] ${failed ? 'text-amber-200/75' : 'text-emerald-200/75'}`}>{item.summary}</p>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] ${failed ? 'bg-amber-500/15 text-amber-100' : 'bg-emerald-500/15 text-emerald-200'}`}>
+                      {failed ? 'risk' : 'uygun'}
+                    </span>
+                  </div>
+                  <div className="mt-2 grid gap-1 text-[10px] sm:grid-cols-2">
+                    {item.checks.map(check => (
+                      <span key={check.key} title={check.detail ?? ''} className="rounded-md bg-white/[0.04] px-2 py-1 text-white/35">
+                        <span className={check.ok ? 'text-emerald-300' : 'text-red-300'}>{check.ok ? '✓' : '×'}</span>
+                        <span className="ml-1 text-white/45">{check.label}</span>
+                        <span className="ml-1">{check.actual} / önerilen {check.required}</span>
+                      </span>
+                    ))}
+                  </div>
+                  {activeBenchmark && (
+                    <div className="mt-3 rounded-lg border border-violet-500/20 bg-violet-500/10 p-2">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-violet-200/80">Aktif Yanıt Testi</span>
+                        <span className="text-[10px] text-white/35">{activeBenchmark.percent == null ? 'çalışıyor' : `%${activeBenchmark.percent}`}</span>
+                      </div>
+                      <AiProgressDetails job={activeBenchmark} compact />
+                    </div>
+                  )}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => tool && onBenchmark(tool)}
+                      disabled={!tool?.installed || busy[`ai-benchmark-${item.toolId}`] || !!activeBenchmark}
+                      className="secondary-btn py-1 text-[11px]"
+                    >
+                      {busy[`ai-benchmark-${item.toolId}`] || activeBenchmark ? 'Test ediliyor' : 'Yanıt Testi'}
+                    </button>
+                    {benchmark ? (
+                      <span className="text-[10px] text-white/40">
+                        {benchmark.rating} · {formatMs(benchmark.elapsedMs)} · {relativeTime(benchmark.createdAt)}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-white/25">{tool?.installed ? 'Kurulumdan sonra yanıt süresi test edilebilir.' : 'Benchmark için önce kurulmalı.'}</span>
+                    )}
+                  </div>
+                  {benchmark?.message && <p className="mt-1 text-[10px] text-white/35">{benchmark.message}</p>}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      ) : (
+        <p className="rounded-lg border border-dashed border-white/8 px-3 py-4 text-center text-xs text-white/30">Sistem bilgisi yükleniyor...</p>
+      )}
+    </div>
+  )
+}
+
+function AiJobRow({ job, onCancel, onPause, onResume, onRetry, onShow, onDelete }: {
+  job: AiJob
+  onCancel: () => void
+  onPause: () => void
+  onResume: () => void
+  onRetry: () => void
+  onShow: () => void
+  onDelete: () => void
+}) {
+  const running = job.status === 'running'
+  const paused = job.status === 'paused'
+  const failed = job.status === 'error' || job.status === 'cancelled'
+  const completedMessage = !running && !paused && job.status === 'done' && job.message
+  const pauseSupported = canPauseAiJob(job)
+  return (
+    <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-white/85">{job.title}</p>
+          <p className="mt-1 text-xs text-white/35">{aiJobLabel(job.kind)} · {relativeTime(job.createdAt)}</p>
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] ${aiStatusClass(job.status)}`}>
+          {aiStatusLabel(job.status)}
+        </span>
+      </div>
+      {(running || paused) && (
+        <div className="mt-3">
+          <AiProgressDetails job={job} />
+        </div>
+      )}
+      {completedMessage && <p className="mt-2 text-xs text-white/45">{formatAiMessage(job.message)}</p>}
+      {job.benchmark && <BenchmarkStatsBlock stats={job.benchmark} />}
+      {job.outputPath && <p className="mt-2 truncate font-mono text-[11px] text-white/35">{job.outputPath}</p>}
+      {job.error && <p className="mt-2 line-clamp-2 text-xs text-red-300/80">{job.error}</p>}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {running && pauseSupported && <button onClick={onPause} className="secondary-btn">Duraklat</button>}
+        {paused && pauseSupported && <button onClick={onResume} className="primary-btn">Devam Et</button>}
+        {(running || paused) && <button onClick={onCancel} className="danger-btn">İptal</button>}
+        {failed && <button onClick={onRetry} className="secondary-btn">Tekrar Dene</button>}
+        {job.outputPath && <button onClick={onShow} className="secondary-btn">Dosyada Göster</button>}
+        {!running && !paused && <button onClick={onDelete} className="danger-btn">Sil</button>}
+      </div>
+    </div>
+  )
+}
+
+function BenchmarkStatsBlock({ stats }: { stats: NonNullable<AiJob['benchmark']> }) {
+  const rows = [
+    stats.model ? { label: 'Model', value: stats.model } : null,
+    stats.mode ? { label: 'Test', value: stats.mode } : null,
+    { label: 'Uygulama Süresi', value: formatMs(stats.elapsedMs) },
+    { label: 'Sonuç', value: stats.rating },
+    stats.totalDurationMs != null ? { label: 'API Toplam', value: formatMs(stats.totalDurationMs) } : null,
+    stats.loadDurationMs != null ? { label: 'Model Yükleme', value: formatMs(stats.loadDurationMs) } : null,
+    stats.firstTokenMs != null ? { label: 'İlk Token', value: formatMs(stats.firstTokenMs) } : null,
+    stats.evalTokensPerSecond != null ? { label: 'Token/sn', value: formatTokensPerSecond(stats.evalTokensPerSecond) } : null,
+    stats.promptTokensPerSecond != null ? { label: 'Prompt Token/sn', value: formatTokensPerSecond(stats.promptTokensPerSecond) } : null,
+    stats.evalCount != null && stats.evalDurationMs != null ? { label: 'Üretim', value: `${stats.evalCount} token / ${formatMs(stats.evalDurationMs)}` } : null,
+    stats.promptEvalCount != null && stats.promptEvalDurationMs != null ? { label: 'Prompt', value: `${stats.promptEvalCount} token / ${formatMs(stats.promptEvalDurationMs)}` } : null,
+    stats.outputChars != null ? { label: 'Çıktı', value: `${stats.outputChars} karakter` } : null,
+    stats.timeoutMs != null ? { label: 'Limit', value: formatMs(stats.timeoutMs) } : null,
+    stats.response ? { label: 'Yanıt', value: stats.response } : null
+  ].filter((row): row is { label: string; value: string } => Boolean(row))
+
+  return (
+    <div className="mt-3 rounded-lg border border-white/8 bg-black/10 p-2">
+      <div className="grid gap-1 text-[10px] text-white/40 sm:grid-cols-2">
+        {rows.map(row => (
+          <span key={row.label} className="rounded-md bg-white/[0.04] px-2 py-1">
+            <span className="text-white/25">{row.label}: </span>{row.value}
+          </span>
+        ))}
+      </div>
+      {stats.note && <p className="mt-2 text-[10px] text-white/35">{stats.note}</p>}
+    </div>
+  )
+}
+
+function AiChatModelHint({ model }: { model: AiChatModel }) {
+  return (
+    <div className="mb-3 rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[11px] text-white/35">
+      <span className="text-white/55">{model.recommendation ?? (model.recommended ? 'Önerilen model' : 'Model')}: </span>
+      {model.description ?? model.id}
+      {model.sizeHint && <span> · Boyut: {model.sizeHint}</span>}
+      {model.recommendationDetail && <span> · {model.recommendationDetail}</span>}
+    </div>
+  )
+}
+
+function InlineAiProgress({ job, onCancel, onPause, onResume }: { job: AiJob; onCancel: () => void; onPause: () => void; onResume: () => void }) {
+  const paused = job.status === 'paused'
+  const running = job.status === 'running'
+  const progressPercent = job.install?.percent ?? job.percent
+  const pauseSupported = canPauseAiJob(job)
+  return (
+    <div className="rounded-lg bg-white/[0.04] p-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="truncate text-xs font-medium text-white/75">{job.title}</p>
+        <span className="shrink-0 text-[10px] text-white/35">{paused ? 'duraklatıldı' : progressPercent == null ? 'çalışıyor' : `%${progressPercent}`}</span>
+      </div>
+      <AiProgressDetails job={job} compact />
+      {job.error && <p className="mt-2 line-clamp-2 text-[11px] text-red-300/80">{job.error}</p>}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {running && pauseSupported && <button onClick={onPause} className="secondary-btn">Duraklat</button>}
+        {paused && pauseSupported && <button onClick={onResume} className="primary-btn">Devam Et</button>}
+        {(running || paused) && <button onClick={onCancel} className="danger-btn">İptal</button>}
+      </div>
+    </div>
+  )
+}
+
+function canPauseAiJob(job: AiJob): boolean {
+  return job.kind !== 'summary' && job.kind !== 'titles' && job.kind !== 'benchmark'
+}
+
+function AiProgressDetails({ job, compact = false }: { job: AiJob; compact?: boolean }) {
+  const paused = job.status === 'paused'
+  const progressPercent = job.install?.percent ?? job.percent
+  const stats = aiProgressStats(job)
+  return (
+    <div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-white/8">
+        <div
+          className={`h-full rounded-full ${paused ? 'bg-amber-300' : 'bg-violet-400'} ${progressPercent == null && !paused ? 'w-1/3 animate-pulse' : ''}`}
+          style={progressPercent == null ? undefined : { width: `${progressPercent}%` }}
+        />
+      </div>
+      {job.install && (
+        <div className="mt-2 flex items-center justify-between gap-3 text-[10px] text-white/40">
+          <span>{formatInstallStage(job.install.stage)}</span>
+          <span>{job.install.percent != null ? `%${job.install.percent} toplam` : `${job.install.completedItems}/${job.install.totalItems} paket`}</span>
+        </div>
+      )}
+      <p className={`${compact ? 'text-[11px]' : 'text-xs'} mt-2 line-clamp-2 text-white/40`}>
+        {formatAiMessage(job.message || (paused ? 'Duraklatıldı.' : 'Çalışıyor...'))}
+      </p>
+      {stats.length > 0 && (
+        <div className="mt-2 grid gap-1 text-[10px] text-white/35 sm:grid-cols-2">
+          {stats.map(stat => (
+            <span key={stat.label} className="rounded-md bg-white/[0.04] px-2 py-1">
+              <span className="text-white/25">{stat.label}: </span>{stat.value}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -656,9 +1965,9 @@ function MessageList({ messages }: { messages: PreflightMessage[] }) {
   )
 }
 
-function Panel({ title, action, children }: { title: string; action?: string; children: React.ReactNode }) {
+function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="rounded-2xl border border-white/8 bg-[#16161A]/80 p-4">
+    <div className="min-w-0 rounded-2xl border border-white/8 bg-[#16161A]/80 p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold uppercase tracking-[0.08em] text-white/55">{title}</h2>
         {action && <span className="rounded-lg bg-white/8 px-2 py-1 text-[11px] text-white/35">{action}</span>}
@@ -710,6 +2019,365 @@ function cleanError(error: unknown): string {
   return (error instanceof Error ? error.message : String(error || 'İşlem tamamlanamadı.'))
     .replace(/^Error invoking remote method '[^']+':\s*/i, '')
     .replace(/^Error:\s*/i, '')
+}
+
+function userFriendlyError(error: unknown, operation: string): string {
+  const message = cleanError(error)
+  const lower = message.toLowerCase()
+
+  if (lower.includes('window.api.clearaijobs is not a function') || lower.includes('window.api.deleteaijob is not a function')) {
+    return 'AI geçmişi silme servisi henüz yüklenmemiş. DropMedia uygulamasını tamamen kapatıp yeniden açın, sonra tekrar deneyin.'
+  }
+  if (lower.includes('no handler registered') && lower.includes('ai-jobs-clear')) {
+    return 'AI geçmişi temizleme servisi ana süreçte henüz yüklenmemiş. DropMedia uygulamasını tamamen kapatıp yeniden açın, sonra tekrar deneyin.'
+  }
+  if (lower.includes('no handler registered') && lower.includes('ai-job-delete')) {
+    return 'AI geçmişi silme servisi ana süreçte henüz yüklenmemiş. DropMedia uygulamasını tamamen kapatıp yeniden açın, sonra tekrar deneyin.'
+  }
+  if (lower.includes('otomatik pip onarımı') || lower.includes('no module named pip')) {
+    return 'Python pip otomatik onarılamadı. İnternet bağlantısı veya Python venv/ensurepip desteği engel olmuş olabilir. Teknik detay admin loguna kaydedildi.'
+  }
+  if (lower.includes('no module named')) {
+    return 'Gerekli AI paketi hazır değil. İlgili araç için "Onar" veya "Kur / Hazırla" butonunu çalıştırıp tekrar deneyin. Teknik detay admin loguna kaydedildi.'
+  }
+  if (lower.includes('metin kaynağı bulunamadı')) {
+    return 'Bu işlem için önce transcript gerekiyor. Transcript çıkarıp tekrar deneyin.'
+  }
+  if (lower.includes('bu komut için tamamlanmış local dosya seçin')) {
+    return 'Bu chat komutu için alttan tamamlanmış bir dosya seçin. Genel sohbet için dosya seçmeden normal mesaj yazabilirsin.'
+  }
+  if (lower.includes('ollama_chat_timeout')) {
+    return 'AI Chat yanıtı zaman aşımına uğradı. Model ilk yanıtta yavaş açılmış olabilir; kısa bir mesajla tekrar deneyin.'
+  }
+  if (lower.includes('ollama otomatik kurulumu')) {
+    return 'Ollama otomatik kurulumu tamamlanamadı. İnternet bağlantısını ve Windows izinlerini kontrol edip Kur / Hazırla veya seçili model indirmeyi tekrar deneyin.'
+  }
+  if (lower.includes('ollama hazır değil') || lower.includes('ollama komutu bulunamadı')) {
+    return 'Ollama hazır değil. AI bölümünden Ollama için Kur / Hazırla veya Onar çalıştırıp tekrar deneyin.'
+  }
+  if (lower.includes('unauthorized') || lower.includes('401')) {
+    return 'Bu işlem için yetki gerekli. Hesap/admin girişini kontrol edip tekrar deneyin.'
+  }
+  if (lower.includes('network') || lower.includes('err_name_not_resolved') || lower.includes('enotfound')) {
+    return 'Bağlantı kurulamadı. İnterneti/VPN-DNS ayarlarını kontrol edip tekrar deneyin. Teknik detay admin loguna kaydedildi.'
+  }
+  if (lower.includes('supabase') && (lower.includes('schema') || lower.includes('table'))) {
+    return 'Supabase tablo yapısı hazır görünmüyor. Admin/Supabase kurulum kontrolünü çalıştırıp tekrar deneyin.'
+  }
+
+  if (operation.startsWith('ai-')) {
+    return 'AI işlemi tamamlanamadı. Model/kurulum durumunu kontrol edip tekrar deneyin. Teknik detay admin loguna kaydedildi.'
+  }
+  return 'İşlem tamamlanamadı. Tekrar deneyin; devam ederse teknik detay admin logundan incelenebilir.'
+}
+
+function isManagedInstallUnavailable(tool: AiToolState): boolean {
+  return tool.id === 'ollama' &&
+    !tool.installed &&
+    (tool.statusDetail ?? '').toLowerCase().includes('desteklenmiyor')
+}
+
+function managedInstallUnavailableMessage(tool: AiToolState): string {
+  return tool.statusDetail ||
+    'Ollama otomatik kurulumu bu platformda desteklenmiyor. Ollama’yı sistemden kurup Kurulum Durumunu Yenile’ye basın.'
+}
+
+function logClientError(error: unknown, operation: string, userMessage: string): void {
+  const api = window.api as typeof window.api & {
+    logClientError?: (payload: { message?: string; stack?: string; operation?: string; details?: Record<string, unknown> }) => Promise<{ ok: true }>
+  }
+  if (typeof api.logClientError !== 'function') return
+
+  const message = cleanError(error)
+  const stack = error instanceof Error ? error.stack : undefined
+  api.logClientError({
+    message,
+    stack,
+    operation,
+    details: { userMessage }
+  }).catch(() => {})
+}
+
+function hasAiHistoryApi(name: 'clearAiJobs' | 'deleteAiJob'): boolean {
+  return typeof (window.api as unknown as Record<string, unknown>)[name] === 'function'
+}
+
+function itemTitle(item: DownloadItem): string {
+  return item.videoInfo?.title || item.outputPath?.split(/[\\/]/).pop() || item.url
+}
+
+function derivativePath(inputPath: string, suffix: string, extension: string): string {
+  const match = inputPath.match(/^(.*?)(\.[^./\\]+)?$/)
+  const base = match?.[1] || inputPath
+  return `${base}.${suffix}.${extension}`
+}
+
+function outputExtension(inputPath: string, preferred?: string): string {
+  const cleanPreferred = preferred?.replace(/^\./, '').toLowerCase()
+  if (cleanPreferred && cleanPreferred !== 'best' && !cleanPreferred.includes('/')) return cleanPreferred
+  const match = inputPath.match(/\.([^./\\]+)$/)
+  return match?.[1]?.toLowerCase() || 'mp4'
+}
+
+function aiJobLabel(kind: AiJobKind): string {
+  if (kind === 'install') return 'kurulum'
+  if (kind === 'repair') return 'onarım'
+  if (kind === 'remove') return 'kaldırma'
+  if (kind === 'transcript') return 'transcript'
+  if (kind === 'summary') return 'özet'
+  if (kind === 'translate') return 'çeviri'
+  if (kind === 'benchmark') return 'yanıt testi'
+  return 'başlık/etiket'
+}
+
+function isAiActionKind(kind: AiJobKind): kind is AiActionKind {
+  return kind === 'transcript' || kind === 'summary' || kind === 'translate' || kind === 'titles'
+}
+
+function recipeStepLabel(step: PostProcessRecipe['steps'][number]): string {
+  if (step === 'metadata') return 'Kapak/süre onarımı'
+  if (step === 'thumbnail') return 'Kapak hazırlığı'
+  if (step === 'subtitle-save') return 'Altyazı dosyası'
+  if (step === 'subtitle-soft') return 'Seçilebilir altyazı'
+  if (step === 'subtitle-burn') return 'Gömülü altyazı'
+  if (step === 'audio-normalize') return 'Ses düzeltme'
+  if (step === 'compress') return 'MP4 sıkıştırma'
+  return 'Transcript'
+}
+
+function smartProfileSummary(profile: SmartProfile, recipe?: PostProcessRecipe): string {
+  const format = formatLabel(profile.format)
+  if (profile.mode === 'music') return `${format} ses dosyası, kapak ve metadata için hazırlanır.`
+  if (profile.mode === 'course') return `${platformLabel(profile.platform)} dersleri altyazı ve transcript ile arşivlenir.`
+  if (profile.mode === 'social') return `${platformLabel(profile.platform)} içerikleri paylaşmaya uygun MP4 akışına girer.`
+  if (profile.mode === 'edit') return `${format} çıktı düzenleme akışına hazırlanır.`
+  return recipe ? `${recipe.name} iş akışına uygun arşiv düzeni kullanılır.` : 'Uzun süreli arşiv için düzenli dosya yapısı kullanılır.'
+}
+
+function formatLabel(format: string): string {
+  const lower = format.toLowerCase()
+  if (lower === 'best') return 'En iyi kalite'
+  if (lower === 'mp3') return 'MP3'
+  if (lower === 'mp4') return 'MP4'
+  return format.toUpperCase()
+}
+
+function platformLabel(platform: string): string {
+  const lower = platform.toLowerCase()
+  if (lower === 'all') return 'Tüm platformlar'
+  if (lower === 'youtube') return 'YouTube'
+  if (lower === 'instagram') return 'Instagram'
+  if (lower === 'twitter' || lower === 'x') return 'X/Twitter'
+  return platform
+}
+
+function subtitleModeLabel(mode: SmartProfile['subtitleMode']): string {
+  if (mode === 'save') return 'Altyazı dosyası'
+  if (mode === 'soft') return 'Seçilebilir altyazı'
+  if (mode === 'burn') return 'Gömülü altyazı'
+  return 'Altyazı yok'
+}
+
+function watchTypeLabel(type: WatchSource['type']): string {
+  if (type === 'youtube-channel') return 'YouTube kanal'
+  if (type === 'youtube-playlist') return 'YouTube playlist'
+  if (type === 'instagram-profile') return 'Instagram profil'
+  if (type === 'instagram-story') return 'Instagram story'
+  if (type === 'instagram-highlight') return 'Instagram highlight'
+  if (type === 'x-profile') return 'X/Twitter profil'
+  if (type === 'tiktok-profile') return 'TikTok profil'
+  return 'Genel kaynak'
+}
+
+function watchActionLabel(action: WatchSource['action']): string {
+  if (action === 'download') return 'Otomatik indir'
+  if (action === 'queue') return 'Bulunca inbox'
+  return 'Sadece bildir'
+}
+
+function watchItemStatusLabel(status: WatchItem['status']): string {
+  if (status === 'queued') return 'inbox'
+  if (status === 'downloaded') return 'indirildi'
+  if (status === 'ignored') return 'yoksayıldı'
+  return 'yeni'
+}
+
+function aiStatusClass(status: AiJob['status']): string {
+  if (status === 'done') return 'bg-emerald-500/15 text-emerald-200'
+  if (status === 'error') return 'bg-red-500/15 text-red-200'
+  if (status === 'paused') return 'bg-amber-500/15 text-amber-100'
+  if (status === 'cancelled') return 'bg-white/8 text-white/35'
+  return 'bg-violet-500/15 text-violet-200'
+}
+
+function aiStatusLabel(status: AiJob['status']): string {
+  if (status === 'done') return 'tamamlandı'
+  if (status === 'error') return 'hata'
+  if (status === 'paused') return 'duraklatıldı'
+  if (status === 'cancelled') return 'iptal'
+  return 'çalışıyor'
+}
+
+function formatAiMessage(message: string): string {
+  const clean = message
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\[\?\d+[hl]/g, '')
+    .replace(/[\x00-\x1F\x7F]/g, ' ')
+    .replace(/[▏▎▍▌▋▊▉█]+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+
+  const ollama = clean.match(/pulling\s+[a-f0-9]{8,}[^:]*:\s*(\d+)%\s+([\d.]+\s+[KMG]B)\/([\d.]+\s+[KMG]B)\s+([\d.]+\s+[KMG]B\/s)\s+(\S+)/i)
+  if (ollama) {
+    return `Model indiriliyor: %${ollama[1]} · ${ollama[2]} / ${ollama[3]} · ${ollama[4]} · kalan ${ollama[5]}`
+  }
+
+  return clean.replace(/pulling\s+[a-f0-9]{8,}[^:]*:\s*/i, 'Model indiriliyor: ')
+}
+
+function aiProgressStats(job: AiJob): Array<{ label: string; value: string }> {
+  const stats: Array<{ label: string; value: string }> = []
+  const install = job.install
+  if (install?.totalItems) {
+    if (install.percent != null) stats.push({ label: 'Toplam', value: `%${install.percent}` })
+    stats.push({
+      label: 'Paket',
+      value: `${install.completedItems}/${install.totalItems} hazır${install.cachedItems ? ` · ${install.cachedItems} cache` : ''}`
+    })
+    if (install.activeItems || install.waitingItems || install.queuedItems) {
+      const downloading = Math.max(0, install.activeItems - install.waitingItems)
+      stats.push({
+        label: 'Paralel',
+        value: `${downloading} iniyor · ${install.waitingItems} bekliyor · ${install.queuedItems} sırada`
+      })
+    }
+    if (install.transferredBytes != null && install.totalBytes != null) {
+      const known = install.knownBytesItems === install.totalItems ? '' : ` · ${install.knownBytesItems}/${install.totalItems} dosya biliniyor`
+      stats.push({ label: 'İndirilen', value: `${formatBytes(install.transferredBytes)} / ${formatBytes(install.totalBytes)}${known}` })
+    }
+    if (install.remainingBytes != null) {
+      stats.push({ label: install.knownBytesItems === install.totalItems ? 'Kalan Boyut' : 'Bilinen Kalan', value: formatBytes(install.remainingBytes) })
+    }
+    if (install.bytesPerSecond != null) stats.push({ label: 'Toplam Hız', value: `${formatBytes(install.bytesPerSecond)}/s` })
+    if (install.etaSeconds != null) stats.push({ label: 'Tahmini Süre', value: `${formatAiDuration(install.etaSeconds)} kaldı` })
+    if (install.currentLabel) stats.push({ label: 'Aktif Dosya', value: trimMiddle(install.currentLabel, 34) })
+    stats.push({ label: 'Aşama', value: formatInstallStage(install.stage) })
+  }
+
+  const download = job.download
+  if (!install && download?.label) stats.push({ label: 'Paket', value: trimMiddle(download.label, 34) })
+  if (!install && download?.transferredBytes != null && download.totalBytes != null) {
+    const remaining = Math.max(0, download.totalBytes - download.transferredBytes)
+    stats.push({ label: 'Boyut', value: `${formatBytes(remaining)} kaldı / ${formatBytes(download.totalBytes)}` })
+  } else if (!install && download?.transferredBytes != null) {
+    stats.push({ label: 'İndirilen', value: formatBytes(download.transferredBytes) })
+  } else if (!install && download?.totalBytes != null) {
+    stats.push({ label: 'Boyut', value: `${formatBytes(download.totalBytes)} toplam` })
+  }
+  if (!install && download?.bytesPerSecond != null) stats.push({ label: 'Hız', value: `${formatBytes(download.bytesPerSecond)}/s` })
+  if (!install && download?.etaSeconds != null) stats.push({ label: 'Süre', value: `${formatAiDuration(download.etaSeconds)} kaldı` })
+  if (!install && !download && job.runtime) {
+    stats.push({ label: 'İşlem', value: job.runtime.label })
+    stats.push({ label: 'Geçen', value: formatMs(job.runtime.elapsedMs) })
+    if (job.runtime.outputChars != null) stats.push({ label: 'Çıktı', value: `${job.runtime.outputChars} karakter` })
+    if (job.runtime.tokens != null) {
+      const speed = job.runtime.tokensPerSecond ? ` · ${formatTokensPerSecond(job.runtime.tokensPerSecond)}` : ''
+      stats.push({ label: 'Üretim', value: `${job.runtime.tokens} parça${speed}` })
+    }
+    if (job.runtime.note) stats.push({ label: 'Durum', value: job.runtime.note })
+  }
+  if (job.status === 'running' || job.status === 'paused') {
+    const hasElapsed = stats.some(stat => stat.label === 'Geçen')
+    if (!hasElapsed) stats.push({ label: 'Geçen', value: formatAiDuration(Math.max(0, Math.round((Date.now() - job.createdAt) / 1000))) })
+  }
+  return stats
+}
+
+function formatInstallStage(stage: NonNullable<AiJob['install']>['stage']): string {
+  if (stage === 'planning') return 'Bağımlılıklar hesaplanıyor'
+  if (stage === 'downloading') return 'Paketler hazırlanıyor'
+  if (stage === 'installing') return 'Local kurulum yapılıyor'
+  return 'Tamamlandı'
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000
+    unit += 1
+  }
+  const decimals = value >= 100 || unit === 0 ? 0 : value >= 10 ? 1 : 2
+  return `${value.toFixed(decimals)} ${units[unit]}`
+}
+
+function formatAiDuration(seconds: number): string {
+  if (!Number.isFinite(seconds)) return '-'
+  const sec = Math.max(0, Math.round(seconds))
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `${h}s ${m}dk`
+  if (m > 0) return `${m}dk ${s}sn`
+  return `${s}sn`
+}
+
+function formatMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '-'
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} sn`
+}
+
+function formatTokensPerSecond(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '-'
+  return `${value.toFixed(value >= 10 ? 1 : 2)} token/sn`
+}
+
+function trimMiddle(value: string, max: number): string {
+  if (value.length <= max) return value
+  const keep = Math.max(4, Math.floor((max - 1) / 2))
+  return `${value.slice(0, keep)}…${value.slice(value.length - keep)}`
+}
+
+function mergeAiJobs(primary: AiJob[], secondary: AiJob[]): AiJob[] {
+  const byId = new Map<string, AiJob>()
+  for (const job of [...primary, ...secondary]) {
+    if (!byId.has(job.id)) byId.set(job.id, job)
+  }
+  return Array.from(byId.values())
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 80)
+}
+
+function upsertAiJobStable(jobs: AiJob[], job: AiJob): AiJob[] {
+  const withoutPending = jobs.filter(item => !(
+    item.id.startsWith('pending-') &&
+    item.kind === job.kind &&
+    item.toolId &&
+    item.toolId === job.toolId
+  ))
+  const index = withoutPending.findIndex(item => item.id === job.id)
+  if (index === -1) return [job, ...withoutPending].slice(0, 80)
+  const next = [...withoutPending]
+  next[index] = job
+  return next.slice(0, 80)
+}
+
+function upsertChatSessionStable(sessions: AiChatSession[], session: AiChatSession): AiChatSession[] {
+  const next = [session, ...sessions.filter(item => item.id !== session.id)]
+  return next.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50)
+}
+
+function activeToolJobMap(jobs: AiJob[], kind: 'install' | 'repair' | 'remove' | 'benchmark'): Map<string, AiJob> {
+  const byTool = new Map<string, AiJob>()
+  for (const job of jobs) {
+    if (job.kind !== kind || !job.toolId) continue
+    const current = byTool.get(job.toolId)
+    if (!current || job.createdAt > current.createdAt) byTool.set(job.toolId, job)
+  }
+  return byTool
 }
 
 function relativeTime(ts?: number): string {

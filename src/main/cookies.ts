@@ -17,6 +17,7 @@ interface BrowserDef {
   label: string
   root: string
   kind: 'firefox' | 'chromium'
+  rootProfile?: boolean
 }
 
 const IS_WIN = process.platform === 'win32'
@@ -33,6 +34,8 @@ function getBrowserDefs(): BrowserDef[] {
       { browser: 'chrome',   label: 'Chrome',   root: join(LOCALAPPDATA, 'Google', 'Chrome', 'User Data'),                   kind: 'chromium' },
       { browser: 'chromium', label: 'Chromium', root: join(LOCALAPPDATA, 'Chromium', 'User Data'),                           kind: 'chromium' },
       { browser: 'brave',    label: 'Brave',    root: join(LOCALAPPDATA, 'BraveSoftware', 'Brave-Browser', 'User Data'),     kind: 'chromium' },
+      { browser: 'opera',    label: 'Opera GX', root: join(APPDATA, 'Opera Software', 'Opera GX Stable'),                    kind: 'chromium', rootProfile: true },
+      { browser: 'opera',    label: 'Opera',    root: join(APPDATA, 'Opera Software', 'Opera Stable'),                       kind: 'chromium', rootProfile: true },
       { browser: 'edge',     label: 'Edge',     root: join(LOCALAPPDATA, 'Microsoft', 'Edge', 'User Data'),                  kind: 'chromium' },
     ]
   }
@@ -41,6 +44,7 @@ function getBrowserDefs(): BrowserDef[] {
     { browser: 'chrome',   label: 'Chrome',   root: join(HOME, '.config/google-chrome'),                 kind: 'chromium' },
     { browser: 'chromium', label: 'Chromium', root: join(HOME, '.config/chromium'),                      kind: 'chromium' },
     { browser: 'brave',    label: 'Brave',    root: join(HOME, '.config/BraveSoftware/Brave-Browser'),   kind: 'chromium' },
+    { browser: 'opera',    label: 'Opera',    root: join(HOME, '.config/opera'),                         kind: 'chromium', rootProfile: true },
     { browser: 'edge',     label: 'Edge',     root: join(HOME, '.config/microsoft-edge'),                kind: 'chromium' },
   ]
 }
@@ -61,12 +65,12 @@ export function detectCookieSources(url?: string): CookieSource[] {
         ? hasDomainCookie(def.kind, cookiePath, domains)
         : false
 
-      const arg = `${def.browser}:${profile}`
+      const arg = cookieArgFor(def, profile)
       sources.push({
         id: arg,
-        label: `${def.label} (${profile})`,
+        label: profileLabel(def, profile),
         browser: def.browser,
-        profile,
+        profile: def.rootProfile ? undefined : profile,
         path: cookiePath,
         arg,
         hasRelevantCookies
@@ -88,16 +92,21 @@ function findCookieSources(): { arg: string; browser: string }[] {
     for (const profile of profileDirs(def)) {
       const cookiePath = cookiePathFor(def, profile)
       if (!cookiePath || !existsSync(cookiePath)) continue
-      sources.push({ arg: `${def.browser}:${profile}`, browser: def.browser })
+      sources.push({ arg: cookieArgFor(def, profile), browser: def.browser })
     }
   }
   return sources.sort((a, b) => browserRank(a.browser) - browserRank(b.browser))
 }
 
-export function resolveCookieBrowser(setting?: string): string | undefined {
+export function resolveAutoCookieBrowser(url?: string): string | undefined {
+  return detectCookieSources(url)[0]?.arg ?? findCookieSources()[0]?.arg
+}
+
+export function resolveCookieBrowser(setting?: string, url?: string): string | undefined {
   const value = (setting ?? '').trim()
-  // Boş veya 'auto' → cookie kullanma
-  if (!value || value === 'auto' || value === 'devre dışı' || value === 'disabled') return undefined
+  if (!value) return resolveAutoCookieBrowser(url)
+  if (value === 'auto') return resolveAutoCookieBrowser(url)
+  if (value === 'devre dışı' || value === 'disabled') return undefined
 
   const sources = findCookieSources()
 
@@ -111,6 +120,8 @@ export function resolveCookieBrowser(setting?: string): string | undefined {
 
 function profileDirs(def: BrowserDef): string[] {
   try {
+    if (def.rootProfile) return ['']
+
     const entries = readdirSync(def.root, { withFileTypes: true })
       .filter(entry => entry.isDirectory())
       .map(entry => entry.name)
@@ -136,9 +147,19 @@ function profileDirs(def: BrowserDef): string[] {
 function cookiePathFor(def: BrowserDef, profile: string): string | null {
   if (def.kind === 'firefox') return join(def.root, profile, 'cookies.sqlite')
 
-  const networkPath = join(def.root, profile, 'Network', 'Cookies')
+  const profileRoot = profile ? join(def.root, profile) : def.root
+  const networkPath = join(profileRoot, 'Network', 'Cookies')
   if (existsSync(networkPath)) return networkPath
-  return join(def.root, profile, 'Cookies')
+  return join(profileRoot, 'Cookies')
+}
+
+function cookieArgFor(def: BrowserDef, profile: string): string {
+  if (def.rootProfile) return `${def.browser}:${def.root}`
+  return `${def.browser}:${profile}`
+}
+
+function profileLabel(def: BrowserDef, profile: string): string {
+  return def.rootProfile ? def.label : `${def.label} (${profile})`
 }
 
 function hasDomainCookie(kind: BrowserDef['kind'], dbPath: string, domains: string[]): boolean {
@@ -172,6 +193,6 @@ function domainsForUrl(url?: string): string[] {
 }
 
 function browserRank(browser: string): number {
-  const ranks: Record<string, number> = { firefox: 0, brave: 1, chrome: 2, chromium: 3, edge: 4 }
+  const ranks: Record<string, number> = { opera: 0, firefox: 1, brave: 2, chrome: 3, chromium: 4, edge: 5 }
   return ranks[browser] ?? 99
 }

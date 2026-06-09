@@ -213,6 +213,199 @@ export interface AiToolState {
   installApproved: boolean
   sizeHint: string
   description: string
+  statusDetail?: string
+  statusVersion?: string
+}
+
+export type AiToolId = AiToolState['id']
+export type AiJobKind = 'install' | 'repair' | 'remove' | 'transcript' | 'summary' | 'translate' | 'titles' | 'benchmark'
+export type AiJobStatus = 'running' | 'paused' | 'done' | 'error' | 'cancelled'
+
+export interface AiToolStatus {
+  id: AiToolId
+  installed: boolean
+  detail?: string
+  version?: string
+}
+
+export interface AiChatModel {
+  id: string
+  label: string
+  installed: boolean
+  recommended?: boolean
+  sizeHint?: string
+  weightGb?: number
+  recommendation?: string
+  recommendationDetail?: string
+  description?: string
+}
+
+export interface AiChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: number
+  model?: string
+}
+
+export interface AiChatSession {
+  id: string
+  title: string
+  model: string
+  attachmentPath?: string
+  attachmentTitle?: string
+  messages: AiChatMessage[]
+  createdAt: number
+  updatedAt: number
+}
+
+export interface AiChatSendRequest {
+  sessionId?: string
+  message: string
+  model?: string
+  attachmentPath?: string
+  attachmentTitle?: string
+}
+
+export type AiChatSendResult = {
+  removed?: false
+  session: AiChatSession
+  assistant: AiChatMessage
+  action?: { kind: Exclude<AiJobKind, 'install' | 'repair' | 'remove' | 'benchmark'>; jobId: string }
+} | { removed: true }
+
+export interface AiSystemSpecs {
+  platform: string
+  arch: string
+  release: string
+  cpuModel: string
+  cpuThreads: number
+  totalMemoryBytes: number
+  freeMemoryBytes: number
+  diskFreeBytes: number
+  diskTotalBytes: number
+}
+
+export interface AiRequirementCheck {
+  key: 'platform' | 'cpu' | 'memory' | 'freeMemory' | 'disk'
+  label: string
+  ok: boolean
+  actual: string
+  required: string
+  detail?: string
+}
+
+export interface AiToolRequirementReport {
+  toolId: AiToolId
+  label: string
+  summary: string
+  checks: AiRequirementCheck[]
+}
+
+export interface AiSystemReport {
+  specs: AiSystemSpecs
+  tools: AiToolRequirementReport[]
+}
+
+export interface AiBenchmarkResult {
+  toolId: AiToolId
+  ok: boolean
+  elapsedMs: number
+  rating: string
+  message: string
+  jobId?: string
+  detail?: string
+  stats?: AiBenchmarkStats
+  createdAt: number
+}
+
+export interface AiBenchmarkStats {
+  model?: string
+  mode?: string
+  elapsedMs: number
+  rating: string
+  response?: string
+  outputChars?: number
+  firstTokenMs?: number
+  evalTokensPerSecond?: number
+  promptTokensPerSecond?: number
+  totalDurationMs?: number
+  loadDurationMs?: number
+  promptEvalCount?: number
+  promptEvalDurationMs?: number
+  evalCount?: number
+  evalDurationMs?: number
+  timeoutMs?: number
+  note?: string
+}
+
+export interface AiJob {
+  id: string
+  kind: AiJobKind
+  title: string
+  status: AiJobStatus
+  percent: number | null
+  message: string
+  download?: AiDownloadProgress
+  install?: AiInstallProgress
+  toolId?: AiToolId
+  modelId?: string
+  inputPath?: string
+  outputPath?: string
+  benchmark?: AiBenchmarkStats
+  runtime?: AiRuntimeProgress
+  error?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface AiRuntimeProgress {
+  label: string
+  startedAt: number
+  updatedAt: number
+  elapsedMs: number
+  outputChars?: number
+  outputChunks?: number
+  tokens?: number
+  tokensPerSecond?: number
+  note?: string
+}
+
+export interface AiDownloadProgress {
+  label?: string
+  transferredBytes?: number
+  totalBytes?: number
+  bytesPerSecond?: number
+  etaSeconds?: number
+  updatedAt: number
+}
+
+export interface AiInstallProgress {
+  stage: 'planning' | 'downloading' | 'installing' | 'done'
+  startedAt: number
+  updatedAt: number
+  completedItems: number
+  totalItems: number
+  cachedItems: number
+  activeItems: number
+  queuedItems: number
+  waitingItems: number
+  knownBytesItems: number
+  percent?: number
+  transferredBytes?: number
+  totalBytes?: number
+  remainingBytes?: number
+  bytesPerSecond?: number
+  etaSeconds?: number
+  currentLabel?: string
+}
+
+export interface AiJobStartRequest {
+  kind: Exclude<AiJobKind, 'install' | 'repair' | 'remove' | 'benchmark'>
+  inputPath: string
+  title?: string
+  model?: string
+  targetLanguage?: string
 }
 
 export interface ProductHubState {
@@ -223,4 +416,36 @@ export interface ProductHubState {
   recipes: PostProcessRecipe[]
   library: LibraryRecord[]
   aiTools: AiToolState[]
+}
+
+export interface AdminStatus {
+  configured: boolean
+  signedIn: boolean
+  baseUrl: string
+  expiresAt?: number
+}
+
+export interface AdminRelease {
+  id?: string
+  version: string
+  channel?: string
+  title?: string
+  notes?: string
+  github_tag?: string
+  appimage_url?: string
+  deb_url?: string
+  latest_yml_url?: string
+  mandatory?: boolean
+  published?: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+export interface AdminReleasePublishInput {
+  bump: 'patch' | 'minor' | 'major'
+  version?: string
+  notes?: string
+  draft?: boolean
+  prerelease?: boolean
+  ref?: string
 }

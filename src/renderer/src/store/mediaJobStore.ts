@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { nanoid } from '../utils/nanoid'
 import { SubtitleStyle } from '../types'
 
-export type MediaJobKind = 'convert' | 'subtitle'
+export type MediaJobKind = 'convert' | 'subtitle' | 'normalize'
 export type MediaJobStatus = 'running' | 'done' | 'error' | 'cancelled'
 
 export interface MediaJob {
@@ -51,6 +51,7 @@ function saveSubtitled(records: SubtitleRecord[]): void {
 }
 
 interface ConvertOpts { inputPath: string; outputFormat: string; outputPath: string; title: string }
+interface NormalizeOpts { inputPath: string; outputPath: string; title: string }
 interface SubtitleOpts {
   inputPath: string
   outputPath: string
@@ -145,6 +146,13 @@ export function useMediaJobs() {
     return jobId
   }, [])
 
+  const startNormalize = useCallback(async (opts: NormalizeOpts): Promise<string> => {
+    const jobId = nanoid()
+    setJobs(prev => [{ id: jobId, kind: 'normalize', title: opts.title, status: 'running', percent: null, message: 'Hazırlanıyor…', createdAt: Date.now() }, ...prev])
+    await window.api.startNormalizeJob({ ...opts, jobId })
+    return jobId
+  }, [])
+
   const cancelJob = useCallback((id: string) => { window.api.cancelMediaJob(id).catch(() => {}) }, [])
   const dismissJob = useCallback((id: string) => setJobs(prev => prev.filter(j => j.id !== id)), [])
 
@@ -167,5 +175,5 @@ export function useMediaJobs() {
   const convertActive  = jobs.some(j => j.kind === 'convert' && j.status === 'running')
   const subtitleActive = jobs.some(j => j.kind === 'subtitle' && j.status === 'running')
 
-  return { jobs, convertedRecords, subtitleRecords, startConvert, startSubtitle, cancelJob, dismissJob, removeConverted, removeSubtitle, convertActive, subtitleActive }
+  return { jobs, convertedRecords, subtitleRecords, startConvert, startSubtitle, startNormalize, cancelJob, dismissJob, removeConverted, removeSubtitle, convertActive, subtitleActive }
 }

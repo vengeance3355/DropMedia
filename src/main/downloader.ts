@@ -112,11 +112,20 @@ function isTwitterUrl(url: string): boolean {
   return u.includes('twitter.com') || u.includes('x.com')
 }
 
+function isAuthenticationRequiredError(text: string): boolean {
+  return text.includes('need to log in') ||
+    text.includes('login required') ||
+    text.includes('cookies-from-browser') ||
+    text.includes('private content') ||
+    text.includes('registered users') ||
+    text.includes('authentication')
+}
+
 export function buildAccessArgs(url: string, opts: { useTor?: boolean; cookieBrowser?: string } = {}): string[] {
   const args: string[] = []
   const useTor = opts.useTor ?? !!(store.get('torEnabled') as boolean | undefined)
   const cookieBrowser = opts.cookieBrowser ?? (store.get('cookieBrowser') as string | undefined)
-  const resolvedCookieBrowser = resolveCookieBrowser(cookieBrowser)
+  const resolvedCookieBrowser = resolveCookieBrowser(cookieBrowser, url)
 
   if (useTor) args.push('--proxy', 'socks5://127.0.0.1:9050')
   if (resolvedCookieBrowser) args.push('--cookies-from-browser', resolvedCookieBrowser)
@@ -197,7 +206,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
       const isFormatOrCookieError = lower.includes('no video formats')
         || lower.includes('requested format is not available')
         || lower.includes('cookies')
-      if (isFormatOrCookieError) {
+      if (isFormatOrCookieError && !isAuthenticationRequiredError(lower)) {
         const noCookieArgs = [...baseArgs, ...buildAccessArgs(url, { cookieBrowser: '' }), url]
         const retry = await runProcess(bin, noCookieArgs)
         if (retry.code === 0) {
@@ -442,7 +451,7 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
     // Cookie'li indirme format hatası verirse cookiesiz yeniden dene
     if (!success && mode !== 'retry-no-cookies' && args.includes('--cookies-from-browser')) {
       const lower = (stderr + stdoutTail).toLowerCase()
-      if (lower.includes('no video formats') || lower.includes('requested format is not available')) {
+      if (!isAuthenticationRequiredError(lower) && (lower.includes('no video formats') || lower.includes('requested format is not available'))) {
         dbg(`FORMAT_ERROR_WITH_COOKIES — retrying without cookies`)
         getMainWindow()?.webContents.send('download-log', { id, msg: 'Cookie ile format hatası alındı, cookiesiz tekrar deneniyor…' })
         startDownloadProcess({ ...opts, cookieBrowser: '' }, 'retry-no-cookies')
@@ -496,8 +505,8 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
     const thumbPromise =
       success && platform === 'discord' && outputPath
         ? generateThumbnail(outputPath).catch(() => null)
-        : success && platform === 'instagram' && opts.thumbnail
-          ? downloadRemoteThumbnail(opts.thumbnail).catch(() => null)
+        : success && platform === 'instagram'
+          ? resolveInstagramDownloadThumbnail(outputPath, opts.thumbnail)
           : Promise.resolve(undefined)
     const thumbnailPath = await thumbPromise
     const duration = success && outputPath
@@ -741,6 +750,12 @@ async function withInstagramThumbnailPath(url: string, info: object & { thumbnai
     thumbnail: pathToFileUrl(thumbnailPath),
     thumbnailPath
   }
+}
+
+async function resolveInstagramDownloadThumbnail(outputPath?: string, remoteThumbnail?: string): Promise<string | null> {
+  const remote = remoteThumbnail ? await downloadRemoteThumbnail(remoteThumbnail).catch(() => null) : null
+  if (remote) return remote
+  return outputPath ? generateThumbnail(outputPath).catch(() => null) : null
 }
 
 function pathToFileUrl(filePath: string): string {

@@ -59,6 +59,7 @@ export function MediaListItem({ item, compact = false, selected = false, onClick
           e.dataTransfer.setData('text/uri-list', `file://${item.outputPath!}`)
           e.dataTransfer.setData('text/plain', item.outputPath!)
           e.dataTransfer.effectAllowed = 'copy'
+          window.api.startFileDrag(item.outputPath!, imageSrc).catch(() => {})
         } : undefined}
         className={`relative shrink-0 overflow-hidden rounded-lg border border-white/[0.06] bg-[#1E1E25] ${showActions && item.outputPath ? 'cursor-pointer' : ''} ${compact ? 'h-10 w-16' : 'h-14 w-24'}`}
       >

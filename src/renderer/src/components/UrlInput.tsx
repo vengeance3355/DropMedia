@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { VideoInfo, VideoFormat } from '../types'
 import { detectPlatform, formatDuration } from '../utils/platform'
+import { isLikelyVideoUrl } from '../utils/videoUrl'
 
 interface Props {
   onDownload: (url: string, format: string, videoInfo: VideoInfo) => Promise<boolean>
@@ -61,7 +62,11 @@ export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandl
 
   async function handlePaste() {
     const text = await navigator.clipboard.readText()
-    setUrl(text)
+    if (!isLikelyVideoUrl(text)) {
+      setError('Clipboard video/medya bağlantısı içermiyor.')
+      return
+    }
+    setUrl(text.trim())
     setVideoInfo(null)
     setError('')
   }
@@ -80,6 +85,10 @@ export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandl
 
   useEffect(() => {
     if (!incomingUrl) return
+    if (!isLikelyVideoUrl(incomingUrl.url)) {
+      onIncomingUrlHandled?.()
+      return
+    }
 
     setUrl(incomingUrl.url)
     setVideoInfo(null)
@@ -314,5 +323,22 @@ function cleanError(e: unknown): string {
     .replace(/^Error:\s*/i, '')
     .trim()
 
-  return cleaned || 'Video bilgisi alınamadı'
+  const lower = cleaned.toLowerCase()
+  if (lower.includes('err_name_not_resolved') || lower.includes('enotfound')) {
+    return 'Bağlantı kurulamadı. İnternet/DNS/VPN ayarlarını kontrol edip tekrar deneyin.'
+  }
+  if (lower.includes('err_internet_disconnected')) {
+    return 'İnternet bağlantısı yok görünüyor. Bağlantı geldikten sonra tekrar analiz edin.'
+  }
+  if (lower.includes('cookie') || lower.includes('private') || lower.includes('gizli') || lower.includes('erişimi engelledi')) {
+    return 'Platform bu bağlantıya erişimi engelledi. Gizli/özel içerik için Ayarlar > Cookie erişimini açıp tekrar deneyin.'
+  }
+  if (lower.includes('timeout') || lower.includes('zaman aş')) {
+    return 'Analiz zaman aşımına uğradı. Platform yavaş yanıt vermiş olabilir; biraz bekleyip tekrar deneyin.'
+  }
+  if (lower.includes('unsupported') || lower.includes('desteklenm')) {
+    return 'Bu bağlantı desteklenmiyor veya video bağlantısı değil. Direkt video/reel/tweet/story linki deneyin.'
+  }
+
+  return cleaned || 'Video bilgisi alınamadı. Bağlantıyı ve erişim ayarlarını kontrol edin.'
 }

@@ -8,14 +8,16 @@ import { Settings } from './components/Settings'
 import { UpdateBanner } from './components/UpdateBanner'
 import { MediaListItem } from './components/MediaListItem'
 import { ProductHub, type ProductHubView } from './components/ProductHub'
+import { AdminPanel } from './components/AdminPanel'
 import { useDownloadStore } from './store/downloadStore'
 import { useMediaJobs } from './store/mediaJobStore'
 import type { ConvertedRecord, SubtitleRecord } from './store/mediaJobStore'
-import { DownloadItem, VideoInfo } from './types'
+import { DEFAULT_SUBTITLE_STYLE, DownloadItem, PostProcessRecipe, ProductHubState, VideoInfo } from './types'
 import { detectPlatform } from './utils/platform'
+import { isLikelyVideoUrl } from './utils/videoUrl'
 
-type Tab = 'queue' | 'history' | 'convert' | 'subtitle' | 'stats' | ProductHubView
-const PRODUCT_TABS: readonly ProductHubView[] = ['links', 'watch', 'library', 'automation', 'ai', 'account']
+type Tab = 'queue' | 'history' | 'convert' | 'subtitle' | 'stats' | 'admin' | ProductHubView
+const PRODUCT_TABS: readonly ProductHubView[] = ['links', 'watch', 'library', 'automation', 'ai', 'ai-chat', 'account']
 type RepairMediaMetadataResult = { success: boolean; item?: DownloadItem; error?: string }
 type RepairMediaMetadataApi = typeof window.api & {
   repairThumbnail: (id: string) => Promise<RepairMediaMetadataResult>
@@ -92,6 +94,10 @@ export default function App() {
         const item = itemsRef.current.find(i => i.id === d.id)
         new Notification('DropMedia', { body: `İndirme tamamlandı: ${item?.videoInfo?.title ?? ''}` })
       }
+
+      if (d.success) {
+        void runAutoRecipeAfterDownload(d)
+      }
     })
 
     window.api.onDownloadPaused(data => {
@@ -137,7 +143,7 @@ export default function App() {
 
   function handleDetectedUrl(rawUrl: string) {
     const url = rawUrl.trim()
-    if (!url) return
+    if (!url || !isLikelyVideoUrl(url)) return
     const key = normalizeUrlForUi(url)
     const lastSeen = recentClipboardUrlsRef.current.get(key) ?? 0
     if (Date.now() - lastSeen < 10_000) return
@@ -153,7 +159,7 @@ export default function App() {
 
   async function handleShortcutDownload(rawUrl: string) {
     const url = rawUrl.trim()
-    if (!url) return
+    if (!url || !isLikelyVideoUrl(url)) return
     const key = normalizeUrlForUi(url)
     if (itemsRef.current.some(i =>
       normalizeUrlForUi(i.url) === key &&
@@ -319,6 +325,123 @@ export default function App() {
     }
   }
 
+  async function runAutoRecipeAfterDownload(done: { id: string; outputPath?: string; outputDir?: string; thumbnailPath?: string; duration?: number }) {
+    if (!done.outputPath) return
+    const enabled = await window.api.getSetting('automationAutoRecipe').catch(() => false)
+    if (!enabled) return
+
+    const base = itemsRef.current.find(item => item.id === done.id)
+    if (!base) return
+    const item: DownloadItem = {
+      ...base,
+      status: 'completed',
+      outputPath: done.outputPath,
+      outputDir: done.outputDir ?? base.outputDir,
+      thumbnailPath: done.thumbnailPath ?? base.thumbnailPath,
+      duration: done.duration ?? base.duration
+    }
+
+    const product = await window.api.getProductState().catch(() => null) as ProductHubState | null
+    if (!product) return
+    const selectedRecipeId = await window.api.getSetting('automationAutoRecipeId').catch(() => '') as string
+    const recipe = pickAutoRecipe(product, item, selectedRecipeId)
+    if (!recipe) return
+
+    for (const step of recipe.steps) {
+      await runAutoRecipeStep(step, recipe, item).catch(() => {})
+    }
+  }
+
+  function pickAutoRecipe(product: ProductHubState, item: DownloadItem, selectedRecipeId?: string): PostProcessRecipe | undefined {
+    const explicit = selectedRecipeId ? product.recipes.find(recipe => recipe.id === selectedRecipeId) : undefined
+    if (explicit) return explicit
+
+    const platform = normalizePlatformKey(item.videoInfo?.platform || detectPlatform(item.url).name)
+    const selectedFormat = (item.selectedFormat || '').toLowerCase()
+    const profile = product.smartProfiles.find(profile => {
+      if (!profile.recipeId) return false
+      const profilePlatform = normalizePlatformKey(profile.platform)
+      const platformOk = profilePlatform === 'all' || platform.includes(profilePlatform) || profilePlatform.includes(platform)
+      const formatOk = profile.format === 'best' || selectedFormat.includes(profile.format.toLowerCase()) || profile.format.toLowerCase().includes(selectedFormat)
+      return platformOk && formatOk
+    }) ?? product.smartProfiles.find(profile => {
+      if (!profile.recipeId) return false
+      const profilePlatform = normalizePlatformKey(profile.platform)
+      return profilePlatform === 'all' || platform.includes(profilePlatform) || profilePlatform.includes(platform)
+    })
+
+    return profile?.recipeId ? product.recipes.find(recipe => recipe.id === profile.recipeId) : undefined
+  }
+
+  async function runAutoRecipeStep(step: PostProcessRecipe['steps'][number], recipe: PostProcessRecipe, item: DownloadItem): Promise<void> {
+    const inputPath = item.outputPath
+    if (!inputPath) return
+    const title = item.videoInfo?.title || inputPath.split(/[\\/]/).pop() || item.url
+
+    if (step === 'metadata' || step === 'thumbnail') {
+      await handleRepairMediaMetadata(item.id)
+      return
+    }
+
+    if (step === 'transcript') {
+      await window.api.startAiJob({ kind: 'transcript', inputPath, title })
+      return
+    }
+
+    if (step === 'compress') {
+      await media.startConvert({
+        inputPath,
+        outputPath: derivativePath(inputPath, 'compressed', 'mp4'),
+        outputFormat: recipe.format ?? 'mp4',
+        title
+      })
+      return
+    }
+
+    if (step === 'audio-normalize') {
+      await media.startNormalize({
+        inputPath,
+        outputPath: derivativePath(inputPath, 'normalized', outputExtension(inputPath, recipe.format)),
+        title
+      })
+      return
+    }
+
+    if (step === 'subtitle-save' || step === 'subtitle-soft' || step === 'subtitle-burn') {
+      const mode = step === 'subtitle-save' ? 'save' : step === 'subtitle-soft' ? 'soft' : 'burn'
+      const ext = mode === 'save' ? 'srt' : 'mp4'
+      const suffix = mode === 'save' ? 'subs' : mode === 'soft' ? 'softsubs' : 'burnedsubs'
+      const cookieBrowser = await window.api.getSetting('cookieBrowser').catch(() => undefined) as string | undefined
+      await media.startSubtitle({
+        inputPath,
+        outputPath: derivativePath(inputPath, suffix, ext),
+        mode,
+        style: DEFAULT_SUBTITLE_STYLE,
+        url: item.url,
+        lang: 'auto',
+        cookieBrowser,
+        title
+      })
+    }
+  }
+
+  function derivativePath(inputPath: string, suffix: string, extension: string): string {
+    const match = inputPath.match(/^(.*?)(\.[^./\\]+)?$/)
+    const base = match?.[1] || inputPath
+    return `${base}.${suffix}.${extension}`
+  }
+
+  function outputExtension(inputPath: string, preferred?: string): string {
+    const cleanPreferred = preferred?.replace(/^\./, '').toLowerCase()
+    if (cleanPreferred && cleanPreferred !== 'best' && !cleanPreferred.includes('/')) return cleanPreferred
+    const match = inputPath.match(/\.([^./\\]+)$/)
+    return match?.[1]?.toLowerCase() || 'mp4'
+  }
+
+  function normalizePlatformKey(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  }
+
   const queueItems   = items.filter(i => i.status !== 'completed' && i.status !== 'error' && i.status !== 'cancelled')
   const historyItems = items.filter(i => i.status === 'completed' || i.status === 'error' || i.status === 'cancelled')
 
@@ -399,6 +522,9 @@ export default function App() {
               <SidebarItem active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} icon={<AiIcon />}>
                 AI
               </SidebarItem>
+              <SidebarItem active={activeTab === 'ai-chat'} onClick={() => setActiveTab('ai-chat')} icon={<AiIcon />}>
+                AI Chat
+              </SidebarItem>
               <SidebarItem active={activeTab === 'account'} onClick={() => setActiveTab('account')} icon={<AccountIcon />}>
                 Hesap
               </SidebarItem>
@@ -425,6 +551,9 @@ export default function App() {
                   </div>
                 </div>
               )}
+              <SidebarItem active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<LockIcon />}>
+                Admin
+              </SidebarItem>
               <button
                 onClick={() => setSettingsOpen(true)}
                 title="Ayarlar"
@@ -465,6 +594,9 @@ export default function App() {
                     onShowItemInFolder={handleShowItemInFolder}
                     onConvertDone={handleConvertDone}
                     onRepairMediaMetadata={handleRepairMediaMetadata}
+                    onStartConvert={media.startConvert}
+                    onStartNormalize={media.startNormalize}
+                    onStartSubtitle={media.startSubtitle}
                   />
                 )}
                 {activeTab === 'history' && (
@@ -499,6 +631,7 @@ export default function App() {
                     subtitleRecords={media.subtitleRecords}
                   />
                 )}
+                {activeTab === 'admin' && <AdminPanel />}
               </div>
             </div>
           </main>
@@ -772,6 +905,10 @@ function AiIcon() {
 
 function AccountIcon() {
   return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+}
+
+function LockIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v2"/></svg>
 }
 
 function RefreshIcon() {
