@@ -148,8 +148,19 @@ const api = {
   listAiChatModels:   () => ipcRenderer.invoke('ai-chat-models'),
   listAiChatSessions: () => ipcRenderer.invoke('ai-chat-sessions'),
   sendAiChatMessage:  (req: object) => ipcRenderer.invoke('ai-chat-send', req),
+  stopAiChat:         (sessionId?: string) => ipcRenderer.invoke('ai-chat-stop', sessionId),
   deleteAiChatSession:(sessionId: string) => ipcRenderer.invoke('ai-chat-delete', sessionId),
   clearAiChatSessions:() => ipcRenderer.invoke('ai-chat-clear'),
+  // Active AI model
+  getActiveAiModel:   () => ipcRenderer.invoke('ai-active-model-get'),
+  setActiveAiModel:   (id: string) => ipcRenderer.invoke('ai-active-model-set', id),
+  // Streaming chat events
+  onAiChatToken:    (cb: (d: { sessionId: string; delta: string }) => void) => ipcRenderer.on('ai-chat-token', (_e, d) => cb(d)),
+  onAiChatDone:     (cb: (d: { sessionId: string }) => void) => ipcRenderer.on('ai-chat-done', (_e, d) => cb(d)),
+  offAiChatStream:  () => {
+    ipcRenderer.removeAllListeners('ai-chat-token')
+    ipcRenderer.removeAllListeners('ai-chat-done')
+  },
   onAiJobProgress:  (cb: (d: object) => void) => ipcRenderer.on('ai-job-progress', (_e, d) => cb(d)),
   onAiJobComplete:  (cb: (d: object) => void) => ipcRenderer.on('ai-job-complete', (_e, d) => cb(d)),
   offAiJobListeners: () => {

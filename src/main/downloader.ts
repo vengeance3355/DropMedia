@@ -453,6 +453,16 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
       const lower = (stderr + stdoutTail).toLowerCase()
       if (!isAuthenticationRequiredError(lower) && (lower.includes('no video formats') || lower.includes('requested format is not available'))) {
         dbg(`FORMAT_ERROR_WITH_COOKIES — retrying without cookies`)
+        // Yeniden denemeden önce bekleyen iptal/duraklatı onurlandır — aynı id'yi
+        // kullandığımız için iptal yeni sürece sızıp görünmez şekilde devam etmesin.
+        if (cancellingDownloads.delete(id)) {
+          getMainWindow()?.webContents.send('download-complete', { id, success: false, code, cancelled: true, error: 'İndirme iptal edildi.' })
+          return
+        }
+        if (pausingDownloads.delete(id)) {
+          getMainWindow()?.webContents.send('download-paused', { id })
+          return
+        }
         getMainWindow()?.webContents.send('download-log', { id, msg: 'Cookie ile format hatası alındı, cookiesiz tekrar deneniyor…' })
         startDownloadProcess({ ...opts, cookieBrowser: '' }, 'retry-no-cookies')
         return
@@ -474,6 +484,15 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
         stdout: stdoutTail
       })
 
+      // Altyazısız yeniden denemeden önce bekleyen iptal/duraklatı onurlandır.
+      if (cancellingDownloads.delete(id)) {
+        getMainWindow()?.webContents.send('download-complete', { id, success: false, code, cancelled: true, error: 'İndirme iptal edildi.' })
+        return
+      }
+      if (pausingDownloads.delete(id)) {
+        getMainWindow()?.webContents.send('download-paused', { id })
+        return
+      }
       const retry = startDownloadProcess({ ...opts, subtitles: false, embedSubs: false }, 'retry-no-subs', true)
       if (!retry.started) {
         const retryError = retry.error || 'İndirme yeniden başlatılamadı. Ayrıntılar admin loguna kaydedildi.'

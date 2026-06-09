@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_SUBTITLE_STYLE } from '../types'
 import type {
   AiChatModel,
@@ -180,8 +180,14 @@ export function ProductHub({
   const [aiChatSessions, setAiChatSessions] = useState<AiChatSession[]>([])
   const [selectedAiChatId, setSelectedAiChatId] = useState('')
   const [aiChatInput, setAiChatInput] = useState('')
-  const [aiChatModel, setAiChatModel] = useState('qwen3.5:9b')
-  const [selectedChatItemId, setSelectedChatItemId] = useState('')
+  const [aiChatModel, setAiChatModel] = useState('qwen2.5:7b')
+  const [activeAiModel, setActiveAiModel] = useState<string | null>(null)
+  const [chatAttachment, setChatAttachment] = useState<{ path: string; title: string } | null>(null)
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const [mentionQuery, setMentionQuery] = useState('')
+  const [streamingBySession, setStreamingBySession] = useState<Record<string, string>>({})
+  const streamAliasRef = useRef<Map<string, string>>(new Map())
+  const pendingStreamDisplayRef = useRef<string[]>([])
   const [activeAiChatPendingIds, setActiveAiChatPendingIds] = useState<Set<string>>(() => new Set())
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [error, setError] = useState('')
@@ -243,12 +249,47 @@ export function ProductHub({
     if (view === 'ai') {
       refreshAiStatus().catch(() => {})
       refreshAiSystemReport().catch(() => {})
+      loadActiveAiModel().catch(() => {})
     }
     if (view === 'ai-chat') {
       refreshAiStatus().catch(() => {})
       refreshAiChat().catch(err => setError(userFriendlyError(err, 'ai-chat-load')))
+      loadActiveAiModel().catch(() => {})
     }
   }, [view])
+
+  // Keep latest sessions readable inside the (mount-once) stream listener
+  // without re-subscribing on every change (avoids dropping tokens mid-stream).
+  const sessionsRef = useRef<AiChatSession[]>([])
+  useEffect(() => { sessionsRef.current = aiChatSessions }, [aiChatSessions])
+
+  // Claude-like live token streaming for the in-progress assistant bubble.
+  useEffect(() => {
+    const resolveDisplayId = (sessionId: string): string => {
+      const alias = streamAliasRef.current.get(sessionId)
+      if (alias) return alias
+      // New chat: real session id is unknown at send time. Bind the first
+      // unmatched stream to the oldest pending optimistic (draft) bubble.
+      const known = sessionsRef.current.some(session => session.id === sessionId)
+      if (!known) {
+        const pending = pendingStreamDisplayRef.current.shift()
+        if (pending) {
+          streamAliasRef.current.set(sessionId, pending)
+          return pending
+        }
+      }
+      streamAliasRef.current.set(sessionId, sessionId)
+      return sessionId
+    }
+    window.api.onAiChatToken(({ sessionId, delta }) => {
+      const displayId = resolveDisplayId(sessionId)
+      setStreamingBySession(prev => ({ ...prev, [displayId]: (prev[displayId] ?? '') + delta }))
+    })
+    // Streamed text stays visible until sendAiChat resolves and swaps in the
+    // persisted session (it clears the entry after listAiChatSessions()).
+    window.api.onAiChatDone(() => {})
+    return () => window.api.offAiChatStream()
+  }, [])
 
   const completed = useMemo(() => historyItems.filter(item => item.status === 'completed'), [historyItems])
   const completedWithFiles = useMemo(() => completed.filter(item => !!item.outputPath), [completed])
@@ -259,10 +300,6 @@ export function ProductHub({
   const selectedAutomationItem = useMemo(
     () => completedWithFiles.find(item => item.id === selectedAutomationItemId) ?? completedWithFiles[0],
     [completedWithFiles, selectedAutomationItemId]
-  )
-  const selectedChatItem = useMemo(
-    () => selectedChatItemId ? completedWithFiles.find(item => item.id === selectedChatItemId) : undefined,
-    [completedWithFiles, selectedChatItemId]
   )
   const selectedAiChatModelInfo = useMemo(
     () => aiChatModels.find(model => model.id === aiChatModel),
@@ -313,6 +350,24 @@ export function ProductHub({
     [aiChatSessions, selectedAiChatId]
   )
   const selectedAiChatBusy = selectedAiChat ? activeAiChatPendingIds.has(selectedAiChat.id) : activeAiChatPendingIds.has(selectedAiChatId)
+  // Merge any live-streamed delta into the last assistant bubble for rendering.
+  const selectedAiChatMessages = useMemo(() => {
+    const base = selectedAiChat?.messages ?? []
+    const streamed = selectedAiChat ? streamingBySession[selectedAiChat.id] : undefined
+    if (streamed === undefined) return base
+    const last = base[base.length - 1]
+    if (last && last.role === 'assistant') {
+      return [...base.slice(0, -1), { ...last, content: streamed || last.content }]
+    }
+    return base
+  }, [selectedAiChat, streamingBySession])
+  // Downloaded library videos that have a local file path, for @-mention RAG.
+  const mentionItems = useMemo(() => {
+    const query = mentionQuery.trim().toLowerCase()
+    const items = completedWithFiles.filter(item => !!item.outputPath)
+    if (!query) return items.slice(0, 8)
+    return items.filter(item => itemTitle(item).toLowerCase().includes(query)).slice(0, 8)
+  }, [completedWithFiles, mentionQuery])
   const inboxReady = state.inbox.filter(item => item.status === 'checked' && item.preflight?.ok).length
   const newWatchItems = state.watchItems.filter(item => item.status === 'new').length
   const privateNeedsCookie = state.inbox.some(item => item.preflight?.needsCookies)
@@ -465,9 +520,38 @@ export function ProductHub({
     ])
     setAiChatModels(models)
     setAiChatSessions(sessions)
-    if ((!aiChatModel || !models.some(model => model.id === aiChatModel)) && models[0]) setAiChatModel(models[0].id)
+    const active = await window.api.getActiveAiModel().catch(() => null)
+    setActiveAiModel(active)
+    const preferred = aiChatModel && models.some(model => model.id === aiChatModel)
+      ? aiChatModel
+      : (active && models.some(model => model.id === active) ? active : models[0]?.id)
+    if (preferred && preferred !== aiChatModel) setAiChatModel(preferred)
     if (selectedAiChatId !== NEW_AI_CHAT_ID && sessions.length && !sessions.some(session => session.id === selectedAiChatId)) setSelectedAiChatId(sessions[0].id)
     if (selectedAiChatId !== NEW_AI_CHAT_ID && !sessions.length) setSelectedAiChatId('')
+  }
+
+  async function loadActiveAiModel() {
+    const active = await window.api.getActiveAiModel().catch(() => null)
+    setActiveAiModel(active)
+    if (active && (!aiChatModel || aiChatModel === 'qwen2.5:7b')) setAiChatModel(active)
+  }
+
+  async function chooseActiveAiModel(id: string) {
+    if (!id) return
+    const previous = activeAiModel
+    setActiveAiModel(id)
+    setAiChatModel(id)
+    try {
+      const confirmed = await window.api.setActiveAiModel(id)
+      setActiveAiModel(confirmed)
+      setAiChatModel(confirmed)
+      setAiMessage(`Aktif model: ${modelLabelById(aiChatModels, confirmed)}`)
+    } catch (err) {
+      setActiveAiModel(previous)
+      const friendly = userFriendlyError(err, 'ai-active-model-set')
+      setError(friendly)
+      logClientError(err, 'ai-active-model-set', friendly)
+    }
   }
 
   async function benchmarkAiTool(tool: AiToolState) {
@@ -660,13 +744,20 @@ export function ProductHub({
     }))
   }
 
-  async function sendAiChat() {
-    const message = aiChatInput.trim()
-    if (!message || selectedAiChatBusy) return
-    const model = aiChatModel || aiChatModels[0]?.id || 'qwen3.5:9b'
-    const requestSessionId = selectedAiChat?.id
+  async function sendAiChat(override?: { message?: string; sessionId?: string }) {
+    const message = (override?.message ?? aiChatInput).trim()
+    const targetSession = override?.sessionId
+      ? aiChatSessions.find(session => session.id === override.sessionId)
+      : selectedAiChat
+    const targetBusy = targetSession ? activeAiChatPendingIds.has(targetSession.id) : selectedAiChatBusy
+    if (!message || targetBusy) return
+    const model = aiChatModel || activeAiModel || aiChatModels[0]?.id || 'qwen2.5:7b'
+    const requestSessionId = targetSession?.id
     const optimisticId = requestSessionId ?? `draft-chat-${Date.now()}`
     const now = Date.now()
+    // Attachment: @-mention selection takes priority, then any sticky session attachment.
+    const attachmentPath = chatAttachment?.path ?? targetSession?.attachmentPath
+    const attachmentTitle = chatAttachment?.title ?? targetSession?.attachmentTitle
     const userMessage: AiChatSession['messages'][number] = {
       id: `draft-user-${now}`,
       role: 'user',
@@ -677,26 +768,31 @@ export function ProductHub({
     const pendingMessage: AiChatSession['messages'][number] = {
       id: `draft-assistant-${now}`,
       role: 'assistant',
-      content: isAiActionPrompt(message)
-        ? 'Komut alındı. Dosya ve kurulum durumu kontrol ediliyor...'
-        : 'Mesaj alındı. Local model hazırlanıyor; ilk yanıtta bu biraz sürebilir...',
+      content: '',
       createdAt: now + 1,
       model
     }
     const optimisticSession: AiChatSession = {
       id: optimisticId,
-      title: selectedAiChat?.title ?? (message.slice(0, 48) || 'Yeni Sohbet'),
+      title: targetSession?.title ?? (message.slice(0, 48) || 'Yeni Sohbet'),
       model,
-      attachmentPath: selectedChatItem?.outputPath ?? selectedAiChat?.attachmentPath,
-      attachmentTitle: selectedChatItem ? itemTitle(selectedChatItem) : selectedAiChat?.attachmentTitle,
-      messages: [...(selectedAiChat?.messages ?? []), userMessage, pendingMessage],
-      createdAt: selectedAiChat?.createdAt ?? now,
+      attachmentPath,
+      attachmentTitle,
+      messages: [...(targetSession?.messages ?? []), userMessage, pendingMessage],
+      createdAt: targetSession?.createdAt ?? now,
       updatedAt: now
     }
+
+    // Route streamed tokens into this bubble. Existing session -> alias by real
+    // id; new chat -> queue the draft id, bound when the first token arrives.
+    if (requestSessionId) streamAliasRef.current.set(requestSessionId, optimisticId)
+    else pendingStreamDisplayRef.current.push(optimisticId)
+    setStreamingBySession(prev => ({ ...prev, [optimisticId]: '' }))
 
     setAiChatPending([optimisticId, requestSessionId ?? ''], true)
     setError('')
     setAiChatInput('')
+    setMentionOpen(false)
     setSelectedAiChatId(optimisticId)
     setAiChatSessions(prev => upsertChatSessionStable(prev, optimisticSession))
     try {
@@ -704,8 +800,8 @@ export function ProductHub({
         sessionId: requestSessionId,
         message,
         model,
-        attachmentPath: selectedChatItem?.outputPath,
-        attachmentTitle: selectedChatItem ? itemTitle(selectedChatItem) : undefined
+        attachmentPath,
+        attachmentTitle
       })
       if (result.removed) {
         const sessions = await window.api.listAiChatSessions()
@@ -715,32 +811,98 @@ export function ProductHub({
       setSelectedAiChatId(result.session.id)
       const sessions = await window.api.listAiChatSessions()
       setAiChatSessions(sessions)
+      // Persisted answer is now in the session list; drop the live stream copy.
+      setStreamingBySession(prev => {
+        const next = { ...prev }
+        delete next[optimisticId]
+        delete next[result.session.id]
+        return next
+      })
       if (result.action) {
         await window.api.listAiJobs().then(setAiJobs).catch(() => {})
       }
     } catch (err) {
       const friendly = userFriendlyError(err, 'ai-chat-send')
       setError(friendly)
-      setAiChatSessions(prev => upsertChatSessionStable(prev, {
-        ...optimisticSession,
-        messages: [
-          ...optimisticSession.messages.slice(0, -1),
-          {
-            ...pendingMessage,
-            content: friendly
-          }
-        ],
-        updatedAt: Date.now()
-      }))
+      // Read the latest streamed text (functional updater avoids a stale closure),
+      // keep any partial answer, then drop the live copy.
+      setStreamingBySession(prev => {
+        const streamed = (prev[optimisticId] ?? '').trim()
+        setAiChatSessions(sessions => upsertChatSessionStable(sessions, {
+          ...optimisticSession,
+          messages: [
+            ...optimisticSession.messages.slice(0, -1),
+            { ...pendingMessage, content: streamed ? `${streamed}\n\n${friendly}` : friendly }
+          ],
+          updatedAt: Date.now()
+        }))
+        const next = { ...prev }
+        delete next[optimisticId]
+        return next
+      })
       logClientError(err, 'ai-chat-send', friendly)
     } finally {
       setAiChatPending([optimisticId, requestSessionId ?? ''], false)
+      setChatAttachment(null)
+      // Drop alias entries bound to this send so a later message in the same
+      // (now-persisted) session is not routed to a stale draft bubble id.
+      for (const [key, value] of streamAliasRef.current) {
+        if (value === optimisticId) streamAliasRef.current.delete(key)
+      }
+      pendingStreamDisplayRef.current = pendingStreamDisplayRef.current.filter(id => id !== optimisticId)
     }
+  }
+
+  async function stopAiChat() {
+    const sessionId = selectedAiChat?.id ?? selectedAiChatId
+    try {
+      // draft-* (henüz sunucuya kaydolmamış yeni sohbet) id'leri sunucu job key'iyle
+      // eşleşmez; bu durumda undefined geçip sunucunun "tüm chat'leri durdur" dalına düş.
+      const persisted = sessionId && sessionId !== NEW_AI_CHAT_ID && !sessionId.startsWith('draft-')
+      await window.api.stopAiChat(persisted ? sessionId : undefined)
+    } catch (err) {
+      logClientError(err, 'ai-chat-stop', cleanError(err))
+    }
+  }
+
+  async function regenerateAiChat() {
+    const session = selectedAiChat
+    if (!session || activeAiChatPendingIds.has(session.id)) return
+    const lastUser = [...session.messages].reverse().find(msg => msg.role === 'user')
+    if (!lastUser) return
+    // Drop the trailing assistant reply (if any) optimistically before re-asking.
+    const trimmed = session.messages[session.messages.length - 1]?.role === 'assistant'
+      ? session.messages.slice(0, -1)
+      : session.messages
+    setAiChatSessions(prev => upsertChatSessionStable(prev, { ...session, messages: trimmed.slice(0, -1), updatedAt: Date.now() }))
+    await sendAiChat({ message: lastUser.content, sessionId: session.id })
+  }
+
+  function handleChatInputChange(value: string) {
+    setAiChatInput(value)
+    const token = activeMentionToken(value)
+    if (token === null) {
+      if (mentionOpen) setMentionOpen(false)
+      return
+    }
+    setMentionQuery(token)
+    setMentionOpen(true)
+  }
+
+  function selectMention(item: DownloadItem) {
+    const title = itemTitle(item)
+    if (item.outputPath) setChatAttachment({ path: item.outputPath, title })
+    // Replace the trailing "@query" fragment with a readable @mention label.
+    setAiChatInput(prev => prev.replace(/@[^\s@]*$/, `@${title} `))
+    setMentionOpen(false)
+    setMentionQuery('')
   }
 
   async function newAiChat() {
     setSelectedAiChatId(NEW_AI_CHAT_ID)
     setAiChatInput('')
+    setChatAttachment(null)
+    setMentionOpen(false)
   }
 
   async function deleteAiChat(sessionId: string) {
@@ -1229,7 +1391,7 @@ export function ProductHub({
         </Panel>
       </section>}
 
-      {view === 'ai' && <section className="grid gap-4 xl:grid-cols-[minmax(300px,1fr)_minmax(300px,1fr)_minmax(420px,1.05fr)]">
+      {view === 'ai' && <section className="grid gap-4 xl:grid-cols-[minmax(320px,1.1fr)_minmax(300px,1fr)_minmax(360px,1fr)]">
         <Panel title="Local AI Araçları" action="ücretsiz / opsiyonel">
           <div className="space-y-2">
             {aiMessage && (
@@ -1251,23 +1413,65 @@ export function ProductHub({
                 ))}
               </div>
             )}
+
             <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-white/55">Aktif Sohbet Modeli</p>
+                <span className="rounded-md bg-white/8 px-2 py-1 text-[10px] text-white/35">
+                  {activeAiModel ? modelLabelById(aiChatModels, activeAiModel) : 'seçili değil'}
+                </span>
+              </div>
+              <select
+                value={activeAiModel ?? ''}
+                onChange={(event) => chooseActiveAiModel(event.target.value)}
+                className="w-full rounded-xl border border-white/8 bg-[#111116] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
+              >
+                <option value="" disabled>Model seç</option>
+                {aiChatModels.map(model => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}{model.installed ? '' : ' · indirilecek'}
+                  </option>
+                ))}
+                {aiChatModels.length === 0 && <option value="" disabled>Model bulunamadı</option>}
+              </select>
+              <p className="mt-2 text-[11px] text-white/30">Sohbet ve hızlı işlerde varsayılan olarak bu model kullanılır.</p>
+            </div>
+
+            <div className="space-y-2 rounded-xl border border-white/8 bg-white/[0.03] p-3">
               <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-white/85">Önerilen Sistem</p>
-                  <p className="mt-1 text-xs text-white/35">PC özellikleri ve yanıt süresi testleri ayrı ekranda.</p>
-                </div>
+                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-white/55">Modeller</p>
+                <span className="rounded-md bg-white/8 px-2 py-1 text-[10px] text-white/35">{aiChatModels.length} model</span>
+              </div>
+              {aiChatModels.map(model => (
+                <AiModelRow
+                  key={model.id}
+                  model={model}
+                  active={activeAiModel === model.id}
+                  installBusy={!!busy[`ai-model-install-${model.id}`] || activeInstallByTool.has('ollama') || activeRepairByTool.has('ollama')}
+                  removeBusy={!!busy['ai-remove-ollama'] || activeRemoveByTool.has('ollama')}
+                  onInstall={() => installAiModel(model)}
+                  onActivate={() => chooseActiveAiModel(model.id)}
+                />
+              ))}
+              {aiChatModels.length === 0 && <Empty text="Model kataloğu yüklenemedi. Ollama'yı kurup yenileyin." />}
+              <div className="flex flex-wrap gap-2 pt-1">
                 <button
-                  onClick={() => {
-                    setShowAiSystemPanel(true)
-                    refreshAiSystemReport().catch(err => setError(userFriendlyError(err, 'ai-system-report')))
-                  }}
-                  className="secondary-btn shrink-0"
+                  onClick={installAllAiModels}
+                  disabled={busy['ai-model-install-all'] || activeInstallByTool.has('ollama') || activeRepairByTool.has('ollama')}
+                  className="secondary-btn py-1 text-[11px]"
                 >
-                  Aç
+                  Tüm Modelleri İndir
+                </button>
+                <button
+                  onClick={() => removeAiTool(state.aiTools.find(t => t.id === 'ollama') ?? state.aiTools[0])}
+                  disabled={!state.aiTools.some(t => t.id === 'ollama') || busy['ai-remove-ollama'] || activeRemoveByTool.has('ollama')}
+                  className="danger-btn py-1 text-[11px]"
+                >
+                  {activeRemoveByTool.has('ollama') ? 'Kaldırılıyor' : 'Modelleri Kaldır'}
                 </button>
               </div>
             </div>
+
             {state.aiTools.map(tool => (
               <div
                 key={tool.id}
@@ -1307,52 +1511,71 @@ export function ProductHub({
           </div>
         </Panel>
 
-        <Panel title="Dosya Aksiyonları" action={selectedAiItem ? 'hazır' : 'dosya yok'}>
-          <div className="space-y-3">
-            <select
-              value={selectedAiItem?.id ?? ''}
-              onChange={(event) => setSelectedAiItemId(event.target.value)}
-              className="w-full rounded-xl border border-white/8 bg-[#111116] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
-            >
-              {completedWithFiles.map(item => (
-                <option key={item.id} value={item.id}>{itemTitle(item)}</option>
+        <div className="min-w-0 space-y-4">
+          <Panel title="Dosya Aksiyonları" action={selectedAiItem ? 'hazır' : 'dosya yok'}>
+            <div className="space-y-3">
+              <select
+                value={selectedAiItem?.id ?? ''}
+                onChange={(event) => setSelectedAiItemId(event.target.value)}
+                className="w-full rounded-xl border border-white/8 bg-[#111116] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
+              >
+                {completedWithFiles.map(item => (
+                  <option key={item.id} value={item.id}>{itemTitle(item)}</option>
+                ))}
+              </select>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button onClick={() => startAiAction('transcript')} disabled={!selectedAiItem || busy['ai-job-transcript']} className="primary-btn">Transcript</button>
+                <button onClick={() => startAiAction('summary')} disabled={!selectedAiItem || busy['ai-job-summary']} className="secondary-btn">Özet</button>
+                <button onClick={() => startAiAction('titles')} disabled={!selectedAiItem || busy['ai-job-titles']} className="secondary-btn">Başlık / Etiket</button>
+                <button onClick={() => startAiAction('translate')} disabled={!selectedAiItem || busy['ai-job-translate']} className="secondary-btn">TR Çeviri</button>
+              </div>
+              <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3 text-xs leading-relaxed text-white/40">
+                Özet, başlık ve çeviri için önce transcript gerekir. Çıktılar indirilen dosyanın yanına `.transcript.txt`, `.summary.md`, `.titles.md` veya `.tr.txt` olarak yazılır.
+              </div>
+            </div>
+          </Panel>
+
+          <Panel
+            title="AI Job Geçmişi"
+            action={
+              historyAiJobs.length > 0
+                ? <button onClick={clearAiJobs} disabled={busy['ai-clear-jobs']} className="secondary-btn py-1 text-[11px]">Geçmişi Temizle</button>
+                : '0 kayıt'
+            }
+          >
+            <div className="max-h-[460px] space-y-2 overflow-y-auto pr-1 scrollbar-thin">
+              {historyAiJobs.map(job => (
+                <AiJobRow
+                  key={job.id}
+                  job={job}
+                  onCancel={() => window.api.cancelAiJob(job.id).catch(() => {})}
+                  onPause={() => pauseAiJob(job)}
+                  onResume={() => resumeAiJob(job)}
+                  onRetry={() => retryAiJob(job)}
+                  onShow={() => job.outputPath && window.api.showItemInFolder(job.outputPath)}
+                  onDelete={() => deleteAiJob(job)}
+                />
               ))}
-            </select>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <button onClick={() => startAiAction('transcript')} disabled={!selectedAiItem || busy['ai-job-transcript']} className="primary-btn">Transcript</button>
-              <button onClick={() => startAiAction('summary')} disabled={!selectedAiItem || busy['ai-job-summary']} className="secondary-btn">Özet</button>
-              <button onClick={() => startAiAction('titles')} disabled={!selectedAiItem || busy['ai-job-titles']} className="secondary-btn">Başlık / Etiket</button>
-              <button onClick={() => startAiAction('translate')} disabled={!selectedAiItem || busy['ai-job-translate']} className="secondary-btn">TR Çeviri</button>
+              {historyAiJobs.length === 0 && <Empty text="Biten, iptal edilen veya hata alan AI işleri burada görünür. Aktif kurulumlar soldaki panelde takip edilir." />}
             </div>
-            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3 text-xs leading-relaxed text-white/40">
-              Özet, başlık ve çeviri için önce transcript gerekir. Çıktılar indirilen dosyanın yanına `.transcript.txt`, `.summary.md`, `.titles.md` veya `.tr.txt` olarak yazılır.
-            </div>
-          </div>
-        </Panel>
+          </Panel>
+        </div>
 
         <Panel
-          title="AI Job Geçmişi"
+          title="Önerilen Sistem"
           action={
-            historyAiJobs.length > 0
-              ? <button onClick={clearAiJobs} disabled={busy['ai-clear-jobs']} className="secondary-btn py-1 text-[11px]">Geçmişi Temizle</button>
-              : '0 kayıt'
+            <button
+              onClick={() => {
+                setShowAiSystemPanel(true)
+                refreshAiSystemReport().catch(err => setError(userFriendlyError(err, 'ai-system-report')))
+              }}
+              className="secondary-btn py-1 text-[11px]"
+            >
+              Yanıt Testi
+            </button>
           }
         >
-          <div className="max-h-[460px] space-y-2 overflow-y-auto pr-1 scrollbar-thin">
-            {historyAiJobs.map(job => (
-              <AiJobRow
-                key={job.id}
-                job={job}
-                onCancel={() => window.api.cancelAiJob(job.id).catch(() => {})}
-                onPause={() => pauseAiJob(job)}
-                onResume={() => resumeAiJob(job)}
-                onRetry={() => retryAiJob(job)}
-                onShow={() => job.outputPath && window.api.showItemInFolder(job.outputPath)}
-                onDelete={() => deleteAiJob(job)}
-              />
-            ))}
-            {historyAiJobs.length === 0 && <Empty text="Biten, iptal edilen veya hata alan AI işleri burada görünür. Aktif kurulumlar soldaki panelde takip edilir." />}
-          </div>
+          <HardwareRequirementsPanel report={aiSystemReport} />
         </Panel>
       </section>}
 
@@ -1408,15 +1631,17 @@ export function ProductHub({
 
           <div className="grid min-h-[560px] grid-rows-[1fr_auto]">
             <div className="space-y-4 overflow-y-auto p-4 scrollbar-thin">
-              {selectedAiChat?.messages.map(message => (
-                <AiChatBubble key={message.id} message={message} />
-              ))}
-              {!selectedAiChat?.messages.length && (
+              {selectedAiChatMessages.map((message, index) => {
+                const isLast = index === selectedAiChatMessages.length - 1
+                const streaming = selectedAiChatBusy && isLast && message.role === 'assistant'
+                return <AiChatBubble key={message.id} message={message} streaming={streaming} />
+              })}
+              {!selectedAiChatMessages.length && (
                 <div className="mx-auto flex min-h-[320px] max-w-xl flex-col items-center justify-center text-center">
                   <div className="rounded-2xl border border-violet-500/20 bg-violet-500/10 px-4 py-3">
                     <p className="text-sm font-medium text-white/85">Local modelle sohbet et</p>
                     <p className="mt-1 text-xs leading-relaxed text-white/40">
-                      Genel soru sorabilir, sağ alttan dosya bağlayabilir veya transcript/özet/başlık/çeviri işlerini chat komutuyla başlatabilirsin.
+                      Genel soru sorabilir, bir kütüphane videosunu <span className="text-violet-200">@</span> ile bağlayıp içeriği hakkında sorabilir veya transcript/özet/başlık/çeviri işlerini chat komutuyla başlatabilirsin.
                     </p>
                   </div>
                   <div className="mt-4 grid w-full gap-2 sm:grid-cols-2">
@@ -1440,64 +1665,84 @@ export function ProductHub({
             </div>
 
             <div className="border-t border-white/8 bg-[#0F0F12]/95 p-4">
-              <div className="mb-3 grid gap-2 lg:grid-cols-[minmax(0,1fr)_220px]">
-                <select
-                  value={selectedChatItemId}
-                  onChange={(event) => setSelectedChatItemId(event.target.value)}
-                  className="w-full rounded-xl border border-white/8 bg-[#16161A] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
-                >
-                  <option value="">Dosya bağlama</option>
-                  {completedWithFiles.map(item => (
-                    <option key={item.id} value={item.id}>{itemTitle(item)}</option>
-                  ))}
-                </select>
-                <select
-                  value={aiChatModel}
-                  onChange={(event) => setAiChatModel(event.target.value)}
-                  className="w-full rounded-xl border border-white/8 bg-[#16161A] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
-                >
-                  {aiChatModels.map(model => (
-                    <option key={model.id} value={model.id}>{model.label}</option>
-                  ))}
-                </select>
-              </div>
-              {selectedAiChatModelInfo && <AiChatModelHint model={selectedAiChatModelInfo} />}
-              {selectedAiChatModelInfo && (
-                <div className="mb-3 flex flex-wrap gap-2">
-                  <button
-                    onClick={() => installAiModel(selectedAiChatModelInfo)}
-                    disabled={selectedAiChatModelInfo.installed || busy[`ai-model-install-${selectedAiChatModelInfo.id}`] || activeInstallByTool.has('ollama') || activeRepairByTool.has('ollama')}
-                    className="primary-btn py-1 text-[11px]"
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="text-[11px] uppercase tracking-[0.08em] text-white/35">Model</span>
+                  <select
+                    value={aiChatModel}
+                    onChange={(event) => chooseActiveAiModel(event.target.value)}
+                    className="min-w-0 max-w-[260px] rounded-xl border border-white/8 bg-[#16161A] px-3 py-2 text-sm text-white outline-none focus:border-violet-500/50"
                   >
-                    {selectedAiChatModelInfo.installed ? 'Model Kurulu' : 'Seçili Modeli İndir'}
-                  </button>
+                    {aiChatModels.map(model => (
+                      <option key={model.id} value={model.id}>{model.label}{model.installed ? '' : ' · indirilecek'}</option>
+                    ))}
+                    {aiChatModels.length === 0 && <option value={aiChatModel}>{aiChatModel}</option>}
+                  </select>
+                </div>
+                {selectedAiChat && (
                   <button
-                    onClick={installAllAiModels}
-                    disabled={busy['ai-model-install-all'] || activeInstallByTool.has('ollama') || activeRepairByTool.has('ollama')}
+                    onClick={regenerateAiChat}
+                    disabled={selectedAiChatBusy || !selectedAiChat.messages.some(m => m.role === 'user')}
                     className="secondary-btn py-1 text-[11px]"
                   >
-                    Tüm Modelleri İndir
+                    Yeniden Üret
+                  </button>
+                )}
+              </div>
+
+              {selectedAiChatModelInfo && !selectedAiChatModelInfo.installed && (
+                <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100/85">
+                  <span className="min-w-0 flex-1">{selectedAiChatModelInfo.label} henüz kurulu değil. İlk mesajda indirilebilir veya şimdi indir.</span>
+                  <button
+                    onClick={() => installAiModel(selectedAiChatModelInfo)}
+                    disabled={busy[`ai-model-install-${selectedAiChatModelInfo.id}`] || activeInstallByTool.has('ollama') || activeRepairByTool.has('ollama')}
+                    className="primary-btn py-1 text-[11px]"
+                  >
+                    İndir
                   </button>
                 </div>
               )}
 
-              {selectedChatItem && (
-                <div className="mb-3 rounded-xl border border-violet-500/20 bg-violet-500/10 px-3 py-2 text-xs text-violet-100/80">
-                  Bağlı dosya: {itemTitle(selectedChatItem)}
+              {chatAttachment && (
+                <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-violet-500/25 bg-violet-500/10 px-3 py-2 text-xs text-violet-100/85">
+                  <span className="min-w-0 truncate">@ {chatAttachment.title} — sonraki soru bu videonun transcripti üzerinden yanıtlanır</span>
+                  <button onClick={() => setChatAttachment(null)} className="shrink-0 text-violet-200/70 transition hover:text-white">Kaldır</button>
                 </div>
               )}
 
-              <div className="rounded-2xl border border-white/8 bg-[#16161A] p-2">
+              <div className="relative rounded-2xl border border-white/8 bg-[#16161A] p-2">
+                {mentionOpen && (
+                  <div className="absolute bottom-full left-2 right-2 z-20 mb-2 max-h-60 overflow-y-auto rounded-xl border border-white/10 bg-[#16161A] p-1 shadow-2xl shadow-black/50 scrollbar-thin">
+                    <p className="px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-white/30">Kütüphane videoları</p>
+                    {mentionItems.map(item => (
+                      <button
+                        key={item.id}
+                        onMouseDown={(event) => { event.preventDefault(); selectMention(item) }}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-white/75 transition hover:bg-white/[0.06]"
+                      >
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-violet-500/15 text-[11px] text-violet-200">@</span>
+                        <span className="min-w-0 flex-1 truncate">{itemTitle(item)}</span>
+                      </button>
+                    ))}
+                    {mentionItems.length === 0 && (
+                      <p className="px-2 py-3 text-center text-xs text-white/30">Eşleşen indirilmiş video yok.</p>
+                    )}
+                  </div>
+                )}
                 <textarea
                   value={aiChatInput}
-                  onChange={(event) => setAiChatInput(event.target.value)}
+                  onChange={(event) => handleChatInputChange(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey) {
+                    if (event.key === 'Escape' && mentionOpen) {
+                      setMentionOpen(false)
+                      return
+                    }
+                    if (event.key === 'Enter' && !event.shiftKey && !mentionOpen) {
                       event.preventDefault()
                       sendAiChat()
                     }
                   }}
-                  placeholder="Mesaj yaz... Örn: Bu dosyayı özetle veya bu videoda ne anlatılıyor?"
+                  placeholder="Mesaj yaz... @ ile kütüphane videosu bağla, sonra içeriği hakkında sor."
                   className="min-h-24 w-full resize-none bg-transparent px-2 py-2 text-sm text-white outline-none placeholder:text-white/25"
                 />
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/8 pt-2">
@@ -1507,9 +1752,13 @@ export function ProductHub({
                     <button onClick={() => setAiChatInput('Bu dosya için başlık ve etiket üret.')} className="secondary-btn py-1 text-[11px]">Başlık</button>
                     <button onClick={() => setAiChatInput('Bu dosyayı Türkçeye çevir.')} className="secondary-btn py-1 text-[11px]">Çeviri</button>
                   </div>
-                  <button onClick={sendAiChat} disabled={!aiChatInput.trim() || selectedAiChatBusy} className="primary-btn min-w-24">
-                    {selectedAiChatBusy ? 'Yazıyor' : 'Gönder'}
-                  </button>
+                  {selectedAiChatBusy ? (
+                    <button onClick={stopAiChat} className="danger-btn min-w-24">Durdur</button>
+                  ) : (
+                    <button onClick={() => sendAiChat()} disabled={!aiChatInput.trim()} className="primary-btn min-w-24">
+                      Gönder
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1673,8 +1922,9 @@ function WatchItemRow({ item, source, onQueue, onIgnore }: {
   )
 }
 
-function AiChatBubble({ message }: { message: AiChatSession['messages'][number] }) {
+function AiChatBubble({ message, streaming = false }: { message: AiChatSession['messages'][number]; streaming?: boolean }) {
   const user = message.role === 'user'
+  const empty = !message.content.trim()
   return (
     <div className={`flex ${user ? 'justify-end' : 'justify-start'}`}>
       <div className={`max-w-[82%] rounded-2xl border px-4 py-3 ${user ? 'border-violet-500/25 bg-violet-500/15' : 'border-white/8 bg-white/[0.04]'}`}>
@@ -1682,10 +1932,78 @@ function AiChatBubble({ message }: { message: AiChatSession['messages'][number] 
           <span className="font-semibold uppercase tracking-[0.08em]">{user ? 'Sen' : message.model ?? 'AI'}</span>
           <span>{formatChatTime(message.createdAt)}</span>
         </div>
-        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-white/75">{message.content}</p>
+        {streaming && empty
+          ? <TypingDots />
+          : <MarkdownText text={message.content} />}
+        {streaming && !empty && <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-violet-300/80 align-middle" />}
       </div>
     </div>
   )
+}
+
+function TypingDots() {
+  return (
+    <div className="flex items-center gap-1 py-1">
+      {[0, 150, 300].map(delay => (
+        <span key={delay} className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/45" style={{ animationDelay: `${delay}ms` }} />
+      ))}
+    </div>
+  )
+}
+
+// Minimal, dependency-free markdown for chat: fenced code blocks, inline code,
+// **bold**, *italic*. Everything else renders as plain text with line breaks.
+function MarkdownText({ text }: { text: string }) {
+  const blocks = useMemo(() => splitCodeBlocks(text), [text])
+  return (
+    <div className="space-y-2 text-sm leading-relaxed text-white/80">
+      {blocks.map((block, index) => block.type === 'code' ? (
+        <pre key={index} className="overflow-x-auto rounded-xl border border-white/8 bg-black/30 p-3 scrollbar-thin">
+          {block.lang && <div className="mb-1 text-[10px] uppercase tracking-[0.08em] text-white/30">{block.lang}</div>}
+          <code className="whitespace-pre font-mono text-[12px] text-white/85">{block.content}</code>
+        </pre>
+      ) : (
+        <p key={index} className="whitespace-pre-wrap break-words">{renderInlineMarkdown(block.content)}</p>
+      ))}
+    </div>
+  )
+}
+
+function splitCodeBlocks(text: string): Array<{ type: 'text' | 'code'; content: string; lang?: string }> {
+  const out: Array<{ type: 'text' | 'code'; content: string; lang?: string }> = []
+  const regex = /```([\w-]*)\n?([\s\S]*?)```/g
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) out.push({ type: 'text', content: text.slice(lastIndex, match.index) })
+    out.push({ type: 'code', content: match[2].replace(/\n$/, ''), lang: match[1] || undefined })
+    lastIndex = regex.lastIndex
+  }
+  if (lastIndex < text.length) out.push({ type: 'text', content: text.slice(lastIndex) })
+  if (!out.length) out.push({ type: 'text', content: text })
+  return out
+}
+
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = []
+  const regex = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  let key = 0
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index))
+    const token = match[0]
+    if (token.startsWith('`')) {
+      nodes.push(<code key={key++} className="rounded bg-white/10 px-1 py-0.5 font-mono text-[12px] text-violet-100">{token.slice(1, -1)}</code>)
+    } else if (token.startsWith('**')) {
+      nodes.push(<strong key={key++} className="font-semibold text-white">{token.slice(2, -2)}</strong>)
+    } else {
+      nodes.push(<em key={key++} className="italic text-white/90">{token.slice(1, -1)}</em>)
+    }
+    lastIndex = regex.lastIndex
+  }
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex))
+  return nodes
 }
 
 function chatPreview(session: AiChatSession): string {
@@ -1694,9 +2012,11 @@ function chatPreview(session: AiChatSession): string {
   return last.content.replace(/\s+/g, ' ').trim()
 }
 
-function isAiActionPrompt(message: string): boolean {
-  const text = message.toLowerCase()
-  return /transkript|transcript|konuşma metni|özet|ozet|summary|summarize|başlık|baslik|etiket|hashtag|title|çevir|cevir|translate|türkçe|turkce/.test(text)
+// Returns the @-mention query the caret is currently inside (text after the
+// trailing "@" with no whitespace), or null when no open mention token exists.
+function activeMentionToken(value: string): string | null {
+  const match = value.match(/(?:^|\s)@([^\s@]*)$/)
+  return match ? match[1] : null
 }
 
 function formatChatTime(ts: number): string {
@@ -1882,13 +2202,105 @@ function BenchmarkStatsBlock({ stats }: { stats: NonNullable<AiJob['benchmark']>
   )
 }
 
-function AiChatModelHint({ model }: { model: AiChatModel }) {
+function modelLabelById(models: AiChatModel[], id: string | null): string {
+  if (!id) return '-'
+  return models.find(model => model.id === id)?.label ?? id
+}
+
+function AiModelRow({ model, active, installBusy, removeBusy, onInstall, onActivate }: {
+  model: AiChatModel
+  active: boolean
+  installBusy: boolean
+  removeBusy: boolean
+  onInstall: () => void
+  onActivate: () => void
+}) {
   return (
-    <div className="mb-3 rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-[11px] text-white/35">
-      <span className="text-white/55">{model.recommendation ?? (model.recommended ? 'Önerilen model' : 'Model')}: </span>
-      {model.description ?? model.id}
-      {model.sizeHint && <span> · Boyut: {model.sizeHint}</span>}
-      {model.recommendationDetail && <span> · {model.recommendationDetail}</span>}
+    <div className={`rounded-xl border p-3 ${active ? 'border-violet-500/35 bg-violet-500/10' : 'border-white/8 bg-white/[0.03]'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-medium text-white/85">{model.label}</p>
+            {model.recommended && <span className="rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.06em] text-violet-200">önerilen</span>}
+            {active && <span className="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.06em] text-emerald-200">aktif</span>}
+          </div>
+          <p className="mt-1 truncate font-mono text-[10px] text-white/30">{model.id}</p>
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${model.installed ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-100'}`}>
+          {model.installed ? 'kurulu' : 'kurulu değil'}
+        </span>
+      </div>
+      {(model.description || model.sizeHint) && (
+        <p className="mt-1 line-clamp-2 text-[11px] text-white/40">
+          {model.description}{model.sizeHint ? `${model.description ? ' · ' : ''}${model.sizeHint}` : ''}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {model.installed ? (
+          <button onClick={onActivate} disabled={active} className="secondary-btn py-1 text-[11px]">
+            {active ? 'Aktif Model' : 'Aktif Yap'}
+          </button>
+        ) : (
+          <button onClick={onInstall} disabled={installBusy} className="primary-btn py-1 text-[11px]">
+            {installBusy ? 'İndiriliyor' : 'İndir'}
+          </button>
+        )}
+        {model.installed && !active && (
+          <button onClick={onInstall} disabled={installBusy} className="secondary-btn py-1 text-[11px]">
+            {installBusy ? 'İşleniyor' : 'Yeniden İndir'}
+          </button>
+        )}
+      </div>
+      {removeBusy && <p className="mt-2 text-[10px] text-white/35">Model verileri kaldırılıyor...</p>}
+    </div>
+  )
+}
+
+// Hardware "Önerilen Sistem": shows PC specs (incl. GPU) and, per tool, whether
+// the machine meets the requirements for fast local responses.
+function HardwareRequirementsPanel({ report }: { report: AiSystemReport | null }) {
+  if (!report) {
+    return <p className="rounded-lg border border-dashed border-white/8 px-3 py-6 text-center text-xs text-white/30">Sistem bilgisi yükleniyor...</p>
+  }
+  const specs = report.specs
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-1 text-[10px] text-white/40 sm:grid-cols-2">
+        <span className="rounded-md bg-white/[0.04] px-2 py-1">CPU: {specs.cpuThreads} thread</span>
+        <span className="rounded-md bg-white/[0.04] px-2 py-1">RAM: {formatBytes(specs.totalMemoryBytes)}</span>
+        <span className="rounded-md bg-white/[0.04] px-2 py-1">Boş RAM: {formatBytes(specs.freeMemoryBytes)}</span>
+        <span className="rounded-md bg-white/[0.04] px-2 py-1">Boş Disk: {formatBytes(specs.diskFreeBytes)}</span>
+        <span className="rounded-md bg-white/[0.04] px-2 py-1 sm:col-span-2">GPU: {specs.gpu ?? 'algılanamadı (CPU modu)'}</span>
+      </div>
+
+      <div className="space-y-2">
+        {report.tools.map(item => {
+          const failed = item.checks.some(check => !check.ok)
+          return (
+            <div key={item.toolId} className="rounded-lg border border-white/8 bg-white/[0.03] p-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium text-white/80">{item.label}</p>
+                  <p className={`mt-0.5 text-[10px] ${failed ? 'text-amber-200/75' : 'text-emerald-200/75'}`}>{item.summary}</p>
+                </div>
+                <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] ${failed ? 'bg-amber-500/15 text-amber-100' : 'bg-emerald-500/15 text-emerald-200'}`}>
+                  {failed ? 'risk' : 'uygun'}
+                </span>
+              </div>
+              <div className="mt-2 grid gap-1 text-[10px] sm:grid-cols-2">
+                {item.checks.map(check => (
+                  <span key={check.key} title={check.detail ?? ''} className="rounded-md bg-white/[0.04] px-2 py-1 text-white/35">
+                    <span className={check.ok ? 'text-emerald-300' : 'text-red-300'}>{check.ok ? '✓' : '×'}</span>
+                    <span className="ml-1 text-white/45">{check.label}</span>
+                    <span className="ml-1">{check.actual} / önerilen {check.required}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <p className="text-[10px] text-white/30">Hızlı yanıt için RAM ve GPU en kritik etkenlerdir. Detaylı yanıt testi için üstteki butonu kullanın.</p>
     </div>
   )
 }
