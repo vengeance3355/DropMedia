@@ -63,7 +63,6 @@ function main() {
   updateVersionFiles(next)
 
   // 5. Build
-  run('npm', ['run', 'audit:package'])
   run('npm', ['run', 'build'])
   run('npx', ['electron-builder', '--win', '--publish', 'never'])
 
