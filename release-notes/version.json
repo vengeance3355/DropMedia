@@ -1,4 +1,4 @@
 {
-  "version": "1.0.2",
-  "notes": "- Admin panel release ak��� test\n- NSIS bootstrapper installer\n- Kur/G�ncelle/Onar/Kald�r"
+  "version": "1.0.3",
+  "notes": "- Uygulama içi sürüm yönetimi\n- Admin panel GitHub API entegrasyonu\n- Installer güncelleyici iyileştirildi"
 }

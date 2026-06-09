@@ -18,12 +18,14 @@ const { spawnSync } = require('child_process')
 const fs   = require('fs')
 const path = require('path')
 
-const root         = path.resolve(__dirname, '..')
-const notesDir     = path.join(root, 'release-notes')
-const bodyFile     = path.join(notesDir, 'RELEASE_BODY.md')
-const versionFile  = path.join(notesDir, 'version.json')
-const releaseDir   = path.join(root, 'release')
-const zipDest      = path.join(releaseDir, 'DropMedia-win-x64.zip')
+const root          = path.resolve(__dirname, '..')
+const notesDir      = path.join(root, 'release-notes')
+const bodyFile      = path.join(notesDir, 'RELEASE_BODY.md')
+const versionFile   = path.join(notesDir, 'version.json')
+const releaseDir    = path.join(root, 'release')
+const zipDest       = path.join(releaseDir, 'DropMedia-win-x64.zip')
+const installerRoot = path.join(root, 'installer')
+const installerExe  = path.join(installerRoot, 'release', 'DropMedia-Installer.exe')
 
 const STABLE_TAG    = 'stable'
 const RELEASE_TITLE = 'DropMedia'
@@ -81,6 +83,19 @@ function main() {
   const zipMb = (fs.statSync(zipDest).size / 1024 / 1024).toFixed(1)
   console.log(`  DropMedia-win-x64.zip: ${zipMb} MB`)
 
+  // 6.5. Installer derle
+  console.log('\nInstaller derleniyor...')
+  const hasInstallerDeps = fs.existsSync(path.join(installerRoot, 'node_modules'))
+  if (!hasInstallerDeps) {
+    const ciResult = spawnSync('npm', ['ci'], { cwd: installerRoot, stdio: 'inherit', shell: true })
+    if (ciResult.status !== 0) fail('Installer bağımlılıkları kurulamadı.')
+  }
+  const instResult = spawnSync('npm', ['run', 'dist'], { cwd: installerRoot, stdio: 'inherit', shell: true })
+  if (instResult.status !== 0) fail('Installer derlenemedi.')
+  if (!fs.existsSync(installerExe)) fail(`Installer bulunamadı: ${installerExe}`)
+  const instMb = (fs.statSync(installerExe).size / 1024 / 1024).toFixed(1)
+  console.log(`  DropMedia-Installer.exe: ${instMb} MB`)
+
   // 7. Git commit + tag (local only, stable tag remote'a taşınır)
   run('git', ['add', 'package.json', 'package-lock.json',
     path.relative(root, bodyFile), path.relative(root, versionFile)])
@@ -99,13 +114,14 @@ function main() {
   if (check.status === 0) {
     // Güncelle
     run('gh', ['release', 'edit', STABLE_TAG, '--title', RELEASE_TITLE, '--notes', newBody, '--draft=false'])
+    run('gh', ['release', 'upload', STABLE_TAG, installerExe, '--clobber'])
     run('gh', ['release', 'upload', STABLE_TAG, zipDest, '--clobber'])
     run('gh', ['release', 'upload', STABLE_TAG, versionFile, '--clobber'])
   } else {
     // İlk oluştur
     run('gh', ['release', 'create', STABLE_TAG,
       '--title', RELEASE_TITLE, '--notes', newBody,
-      zipDest, versionFile
+      installerExe, zipDest, versionFile
     ])
   }
 

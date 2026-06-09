@@ -50,6 +50,9 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: NSIS kur
+        run: choco install nsis -y --no-progress
+
       - name: Bağımlılıkları kur
         run: npm ci
 
