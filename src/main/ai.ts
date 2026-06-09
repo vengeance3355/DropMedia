@@ -1139,13 +1139,13 @@ function ollamaBenchmarkDetail(result: OllamaGenerateResult): string {
   return parts.join(' · ')
 }
 
-function ollamaBenchmarkStats(result: OllamaGenerateResult, elapsedMs: number, timeoutMs: number, rating: string): AiBenchmarkStats {
+function ollamaBenchmarkStats(result: OllamaGenerateResult, elapsedMs: number, timeoutMs: number, rating: string, model: string): AiBenchmarkStats {
   const loadMs = result.loadDurationMs ?? 0
   const warm = loadMs < 2_000
   const evalTokensPerSecond = tokensPerSecond(result.evalCount, result.evalDurationMs)
   const promptTokensPerSecond = tokensPerSecond(result.promptEvalCount, result.promptEvalDurationMs)
   return {
-    model: ollamaModel,
+    model,
     mode: 'Gerçek Türkçe özet üretimi',
     elapsedMs,
     rating,
@@ -2078,6 +2078,32 @@ function modelInstalled(names: string[], model: string): boolean {
   return names.some(name => name === model || name === `${model}:latest`)
 }
 
+function parseOllamaModelNames(listStdout: string): string[] {
+  return listStdout
+    .split(/\r?\n/)
+    .map(line => line.trim().split(/\s+/)[0])
+    .filter(name => name && name.toUpperCase() !== 'NAME')
+}
+
+function getStoredActiveModel(): string | undefined {
+  const v = store.get('ai.activeModel')
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined
+}
+
+function setActiveModel(id: string): void {
+  store.set('ai.activeModel', id)
+}
+
+// Aktif modeli çöz: kullanıcı seçtiyse + hâlâ kuruluysa onu; yoksa kurulu ilk
+// katalog modeli; yoksa kurulu herhangi bir model; hiçbiri yoksa null.
+function resolveActiveModel(installedNames: string[]): string | null {
+  const stored = getStoredActiveModel()
+  if (stored && modelInstalled(installedNames, stored)) return stored
+  const cat = ollamaRecommendedModels.find(m => modelInstalled(installedNames, m.id))
+  if (cat) return cat.id
+  return installedNames[0] ?? null
+}
+
 function ollamaChatModelLabel(model: AiChatModel, installed: boolean): string {
   const size = model.sizeHint ? ` · ${model.sizeHint}` : ''
   const status = installed ? ' · kurulu' : ' · kurulu değil'
@@ -2256,18 +2282,20 @@ async function benchmarkAiTool(toolId: AiToolId): Promise<AiBenchmarkResult> {
       updateJob(job, { percent: 25, message: 'Ollama local server kontrol ediliyor...' })
       await ensureOllamaServer(job, ollamaBin)
       const list = await runSimple(ollamaBin, ['list'], undefined, 8_000)
-      if (!hasOllamaModel(list.stdout, ollamaModel)) {
-        throw new Error(`${ollamaModel} modeli kurulu değil. Ollama için "Kur / Hazırla" çalıştırın.`)
+      const benchModel = resolveActiveModel(parseOllamaModelNames(list.stdout))
+      if (!benchModel) {
+        throw new Error('Hiç Ollama modeli kurulu değil. Local AI Araçları\'ndan bir model kurun.')
       }
       const timeoutMs = 180_000
-      updateJob(job, { percent: 35, message: `${ollamaModel} gerçek hız testi başlıyor...` })
-      const ollamaResult = await runOllamaBenchmark(job, ollamaModel, timeoutMs)
+      updateJob(job, { percent: 35, message: `${benchModel} gerçek hız testi başlıyor...` })
+      const ollamaResult = await runOllamaBenchmark(job, benchModel, timeoutMs)
       const elapsedMs = Date.now() - started
       stats = ollamaBenchmarkStats(
         ollamaResult,
         elapsedMs,
         timeoutMs,
-        benchmarkRating(elapsedMs, toolId, tokensPerSecond(ollamaResult.evalCount, ollamaResult.evalDurationMs))
+        benchmarkRating(elapsedMs, toolId, tokensPerSecond(ollamaResult.evalCount, ollamaResult.evalDurationMs)),
+        benchModel
       )
       detail = ollamaBenchmarkDetail(ollamaResult)
       result = {
@@ -3199,6 +3227,16 @@ export function setupAiHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('ai-job-delete', (_e, jobId: string) => deleteStoredJob(jobId))
   ipcMain.handle('ai-jobs-clear', () => clearStoredJobs())
   ipcMain.handle('ai-chat-models', () => listAiChatModels())
+  ipcMain.handle('ai-active-model-get', async () => {
+    const bin = await detectOllamaCommand()
+    const list = bin ? await runSimple(bin, ['list'], undefined, 8_000) : null
+    const names = list && list.code === 0 ? parseOllamaModelNames(list.stdout) : []
+    return resolveActiveModel(names)
+  })
+  ipcMain.handle('ai-active-model-set', (_e, id: string) => {
+    setActiveModel(String(id))
+    return String(id)
+  })
   ipcMain.handle('ai-chat-sessions', () => listChatSessions())
   ipcMain.handle('ai-chat-send', (_e, req: AiChatSendRequest) => sendAiChatMessage(req))
   ipcMain.handle('ai-chat-delete', (_e, sessionId: string) => deleteChatSession(sessionId))
