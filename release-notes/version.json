@@ -1,4 +1,4 @@
 {
-  "version": "1.0.5",
-  "notes": "- fix(ai): güvenlik review bulgularını kapat (stop, leak, injection, embed-host)\n- feat(ai): AI redesign — streaming chat + RAG @video + model manager + hardening\n- fix(downloader): retry respawn'da bekleyen iptal/duraklat sızıntısı\n- fix(ai/security): OLLAMA_HOST'u loopback'e kısıtla\n- feat(ai): aktif-model çözümleyici + benchmark kurulu modeli kullanır\n- fix(ai-chat): keyword-hijack kaldır + history race düzelt\n- fix(ai): geçersiz Ollama model tag'lerini düzelt (qwen3.5 -> qwen2.5)\n- fix: installer logo/spinner + SubtitleTab ölü butonlar + typecheck hataları\n- fix(installer): uzun release notlarına scroll ekle\n- fix(release): changelog notlarını stable..HEAD aralığından üret\n- chore(admin): release yönetimini komple kaldır (in-app + admin-panel API)"
+  "version": "1.0.6",
+  "notes": "- Güncelleme döngüsü düzeltildi (installer indirmelerine cache-bust)\n- Güncelleyici yoksa otomatik indirilir\n- AI redesign + admin panel sadeleştirmesi (önceki sürümlerden)"
 }

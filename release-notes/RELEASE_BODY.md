@@ -101,3 +101,10 @@ Ana sürüm
 - fix(installer): uzun release notlarına scroll ekle
 - fix(release): changelog notlarını stable..HEAD aralığından üret
 - chore(admin): release yönetimini komple kaldır (in-app + admin-panel API)
+
+---
+
+# 1.0.6
+- Güncelleme döngüsü düzeltildi (installer indirmelerine cache-bust)
+- Güncelleyici yoksa otomatik indirilir
+- AI redesign + admin panel sadeleştirmesi (önceki sürümlerden)
