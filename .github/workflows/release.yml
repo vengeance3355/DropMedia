@@ -66,6 +66,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_NOTES: ${{ inputs.notes }}
+          # Pakete derleme anında gömülür (electron.vite.config.ts define).
+          # Anon key RLS ile sınırlı; istemciye gömülmesi tasarım gereği.
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
         run: |
           set -euo pipefail

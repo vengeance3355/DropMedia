@@ -115,24 +115,6 @@ CREATE TABLE IF NOT EXISTS watch_items (
   UNIQUE(user_id, source_url)
 );
 
--- Admin release/changelog kayıtları. GitHub release asıl dağıtım kaynağıdır;
--- bu tablo admin panelde not düzenleme ve geçmiş izleme içindir.
-CREATE TABLE IF NOT EXISTS app_releases (
-  id             UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  version        TEXT NOT NULL UNIQUE,
-  channel        TEXT DEFAULT 'stable',
-  title          TEXT,
-  notes          TEXT,
-  github_tag     TEXT,
-  appimage_url   TEXT,
-  deb_url        TEXT,
-  latest_yml_url TEXT,
-  mandatory      BOOLEAN DEFAULT FALSE,
-  published      BOOLEAN DEFAULT FALSE,
-  created_at     TIMESTAMPTZ DEFAULT NOW(),
-  updated_at     TIMESTAMPTZ DEFAULT NOW()
-);
-
 -- Admin giriş bilgisi. Şifre açık tutulmaz; admin panel scrypt hash doğrular.
 -- RLS açık ve public policy yoktur, sadece service_role erişir.
 CREATE TABLE IF NOT EXISTS admin_users (
@@ -150,7 +132,6 @@ ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE download_library ENABLE ROW LEVEL SECURITY;
 ALTER TABLE watch_sources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE watch_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE app_releases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "user_settings_owner_all" ON user_settings;
@@ -169,12 +150,8 @@ DROP POLICY IF EXISTS "watch_items_owner_all" ON watch_items;
 CREATE POLICY "watch_items_owner_all" ON watch_items
   FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
--- app_releases service_role ile admin panelden yönetilir; public okuma açılmadı.
-
 CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id);
 CREATE INDEX IF NOT EXISTS idx_library_user       ON download_library(user_id);
 CREATE INDEX IF NOT EXISTS idx_watch_sources_user ON watch_sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_watch_items_user   ON watch_items(user_id);
-CREATE INDEX IF NOT EXISTS idx_releases_version   ON app_releases(version);
-CREATE INDEX IF NOT EXISTS idx_releases_created   ON app_releases(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_users_active ON admin_users(active, created_at);
