@@ -133,11 +133,25 @@ CREATE TABLE IF NOT EXISTS app_releases (
   updated_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Admin giriş bilgisi. Şifre açık tutulmaz; admin panel scrypt hash doğrular.
+-- RLS açık ve public policy yoktur, sadece service_role erişir.
+CREATE TABLE IF NOT EXISTS admin_users (
+  id             UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  label          TEXT DEFAULT 'Owner',
+  role           TEXT DEFAULT 'owner' CHECK (role IN ('owner')),
+  password_hash  TEXT NOT NULL,
+  active         BOOLEAN DEFAULT TRUE,
+  last_login_at  TIMESTAMPTZ,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
 ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE download_library ENABLE ROW LEVEL SECURITY;
 ALTER TABLE watch_sources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE watch_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_releases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "user_settings_owner_all" ON user_settings;
 CREATE POLICY "user_settings_owner_all" ON user_settings
@@ -163,3 +177,4 @@ CREATE INDEX IF NOT EXISTS idx_watch_sources_user ON watch_sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_watch_items_user   ON watch_items(user_id);
 CREATE INDEX IF NOT EXISTS idx_releases_version   ON app_releases(version);
 CREATE INDEX IF NOT EXISTS idx_releases_created   ON app_releases(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_users_active ON admin_users(active, created_at);

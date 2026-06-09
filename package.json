@@ -13,16 +13,14 @@
     "supabase:doctor": "node scripts/supabase-doctor.js",
     "supabase:auto": "node scripts/supabase-doctor.js --auto",
     "supabase:auto:vercel": "node scripts/supabase-doctor.js --auto --sync-vercel",
-    "dist": "npm run build && electron-builder",
-    "dist:linux": "npm run build && electron-builder --linux",
-    "dist:win": "npm run build && electron-builder --win",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "build-installer": "node scripts/build-installer.js",
     "release": "node scripts/release.js",
     "release:minor": "node scripts/release.js minor",
     "release:major": "node scripts/release.js major"
   },
   "dependencies": {
     "electron-store": "^8.2.0",
-    "electron-updater": "^6.3.9",
     "framer-motion": "^12.40.0",
     "lucide-react": "^1.17.0"
   },
@@ -55,30 +53,11 @@
       "resources/**/*",
       "package.json"
     ],
-    "publish": {
-      "provider": "github",
-      "owner": "vengeance3355",
-      "repo": "DropMedia"
-    },
-    "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "icon": "resources/icon.png",
-      "category": "Network",
-      "maintainer": "vengeance3355@users.noreply.github.com"
-    },
     "win": {
       "target": [
-        "nsis"
+        "dir"
       ],
       "icon": "resources/icon.ico"
-    },
-    "nsis": {
-      "artifactName": "${productName}-Setup-${version}.${ext}",
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
     }
   }
 }

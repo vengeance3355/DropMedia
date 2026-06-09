@@ -1,20 +1,24 @@
 import { spawn } from 'child_process'
 import { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, globalShortcut, clipboard, net } from 'electron'
 import { join } from 'path'
+import { tmpdir } from 'os'
 import { existsSync, appendFileSync } from 'fs'
 
 function dbgSettings(msg: string) {
-  try { appendFileSync('/tmp/dropmedia_settings.log', `[${new Date().toISOString()}] ${msg}\n`) } catch { /* ignore */ }
+  try { appendFileSync(join(tmpdir(), 'dropmedia_settings.log'), `[${new Date().toISOString()}] ${msg}\n`) } catch { /* ignore */ }
 }
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { buildAccessArgs, getYtDlpPath, probeDuration, setupDownloadHandlers } from './downloader'
+import { setupAiHandlers } from './ai'
 import { setupMediaJobHandlers } from './mediaJobs'
 import { setupProductHubHandlers, startProductWatchScheduler, stopProductWatchScheduler } from './productHub'
 import { setupSyncHandlers } from './sync'
+import { setupAdminClientHandlers } from './adminClient'
 import { setupUpdater } from './updater'
 import { setupInstallerHandlers } from './installer'
 import { flushPendingRemoteLogs, logActivity, logError, getLocalLogPath } from './logger'
 import { startAdminBridge } from './adminBridge'
+import { isLikelyVideoUrl } from './videoUrl'
 import { downloadRemoteThumbnail, downloadRemoteThumbnailForItem, generateThumbnail, generateThumbnailForItem, pathToDataUrl } from './thumbnailCache'
 import Store from 'electron-store'
 
@@ -139,15 +143,6 @@ function setupTray(): void {
 let clipboardInterval: ReturnType<typeof setInterval> | null = null
 let lastClipboard = ''
 
-function isHttpUrl(text: string): boolean {
-  try {
-    const u = new URL(text)
-    return u.protocol === 'http:' || u.protocol === 'https:'
-  } catch {
-    return false
-  }
-}
-
 function sendClipboardUrl(text: string): void {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
   mainWindow.webContents.send('clipboard-url', text)
@@ -169,7 +164,7 @@ function startClipboardWatch(): void {
       if (text === lastClipboard) return
       lastClipboard = text
 
-      if (isHttpUrl(text)) {
+      if (isLikelyVideoUrl(text)) {
         sendClipboardUrl(text)
       }
     } catch (err) {
@@ -198,7 +193,7 @@ function registerClipboardShortcut(shortcut: string): void {
     globalShortcut.register(shortcut, () => {
       try {
         const text = clipboard.readText().trim()
-        if (isHttpUrl(text)) {
+        if (isLikelyVideoUrl(text)) {
           if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
           mainWindow.webContents.send('clipboard-shortcut-url', text)
         }
@@ -240,9 +235,11 @@ app.whenReady().then(() => {
 
   setupWindowControls()
   setupDownloadHandlers(ipcMain)
+  setupAiHandlers(ipcMain)
   setupMediaJobHandlers(ipcMain)
   setupProductHubHandlers(ipcMain)
   setupSyncHandlers(ipcMain)
+  setupAdminClientHandlers(ipcMain)
 
   // Thumbnail IPC — video path'ten ffmpeg ile frame çıkar, image path'ten dosyayı oku
   ipcMain.handle('get-thumbnail', async (_e, filePath: string) => {
@@ -441,6 +438,16 @@ function setupSettingsHandlers(ipcMain: Electron.IpcMain, store: Store): void {
   ipcMain.handle('open-url',             (_e, url: string) => shell.openExternal(url))
   ipcMain.handle('app-version',          () => app.getVersion())
   ipcMain.handle('get-log-path',         () => getLocalLogPath())
+  ipcMain.handle('client-error-log', async (_e, payload: { message?: string; stack?: string; operation?: string; details?: Record<string, unknown> }) => {
+    await logError({
+      errorType: 'general',
+      errorMessage: String(payload?.message || 'Renderer hatası'),
+      stackTrace: payload?.stack,
+      operation: payload?.operation || 'renderer-error',
+      details: payload?.details
+    })
+    return { ok: true, localLogPath: getLocalLogPath() }
+  })
 }
 
 async function repairDownloadItem(id: string): Promise<{ success: boolean; item?: DownloadItemRecord; error?: string }> {

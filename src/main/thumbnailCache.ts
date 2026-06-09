@@ -5,6 +5,7 @@ import http from 'http'
 import https from 'https'
 import { join } from 'path'
 import { app } from 'electron'
+import { resolveFfmpegPath } from './platform'
 
 let chain: Promise<unknown> = Promise.resolve()
 
@@ -126,11 +127,5 @@ function isImagePath(filePath: string): boolean {
 }
 
 function getFfmpegPath(): string {
-  const candidates = [
-    `${process.env.HOME}/.local/bin/ffmpeg`,
-    '/usr/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg',
-    '/opt/homebrew/bin/ffmpeg'
-  ]
-  return candidates.find(p => existsSync(p)) ?? 'ffmpeg'
+  return resolveFfmpegPath()
 }

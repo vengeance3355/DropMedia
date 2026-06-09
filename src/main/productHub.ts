@@ -5,6 +5,7 @@ import { existsSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { buildAccessArgs, detectPlatformName, formatCommand, getYtDlpPath, hasFfmpeg } from './downloader'
+import { resolveCookieBrowser } from './cookies'
 import { logError } from './logger'
 
 type InboxStatus = 'new' | 'checked' | 'queued' | 'ignored' | 'error'
@@ -120,6 +121,8 @@ interface AiToolState {
   installApproved: boolean
   sizeHint: string
   description: string
+  statusDetail?: string
+  statusVersion?: string
 }
 
 interface ProductHubState {
@@ -323,7 +326,8 @@ function recommendedFormat(raw: Record<string, unknown>): string {
 async function preflight(url: string, cookieBrowser?: string): Promise<PreflightReport> {
   const target = normalizeUrl(url)
   const messages: PreflightMessage[] = []
-  const accessArgs = buildAccessArgs(target, { cookieBrowser: cookieSetting(cookieBrowser) })
+  const resolvedCookieBrowser = resolveCookieBrowser(cookieSetting(cookieBrowser), target)
+  const accessArgs = buildAccessArgs(target, { cookieBrowser: resolvedCookieBrowser ?? 'disabled' })
   const args = ['--ignore-config', '--dump-json', '--no-playlist', '--no-warnings', ...accessArgs, target]
   const result = await runProcess(args)
 
@@ -428,7 +432,8 @@ async function checkWatchSource(sourceId: string): Promise<{ source: WatchSource
   const source = state.watchSources.find(item => item.id === sourceId)
   if (!source) throw new Error('Takip kaynağı bulunamadı.')
 
-  const accessArgs = buildAccessArgs(source.url)
+  const resolvedCookieBrowser = resolveCookieBrowser(cookieSetting(), source.url)
+  const accessArgs = buildAccessArgs(source.url, { cookieBrowser: resolvedCookieBrowser ?? 'disabled' })
   const args = ['--ignore-config', '--flat-playlist', '--dump-json', '--yes-playlist', '--no-warnings', ...accessArgs, source.url]
   const result = await runProcess(args, 75_000)
   const updatedSource: WatchSource = {

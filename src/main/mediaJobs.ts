@@ -14,7 +14,7 @@ import { logError } from './logger'
 const activeJobs = new Map<string, ReturnType<typeof spawn>>()
 const cancelledJobs = new Set<string>()
 
-type JobKind = 'convert' | 'subtitle'
+type JobKind = 'convert' | 'subtitle' | 'normalize'
 
 export interface SubtitleStyle {
   fontName: string
@@ -151,6 +151,62 @@ function startConvert(opts: { jobId: string; inputPath: string; outputFormat: st
         stackTrace: spawnError?.stack
       })
       emitComplete({ id: jobId, kind: 'convert', title, success: false, error })
+    })
+}
+
+function startNormalize(opts: { jobId: string; inputPath: string; outputPath: string; title?: string }): void {
+  const { jobId, inputPath, outputPath } = opts
+  const title = opts.title || basename(inputPath)
+
+  if (!hasFfmpeg()) {
+    emitComplete({ id: jobId, kind: 'normalize', title, success: false, error: 'ffmpeg kurulu değil.' })
+    return
+  }
+  if (!existsSync(inputPath)) {
+    emitComplete({ id: jobId, kind: 'normalize', title, success: false, error: 'Kaynak dosya bulunamadı.' })
+    return
+  }
+
+  const outExt = extname(outputPath).toLowerCase()
+  const audioCodec = outExt === '.mp3' ? 'libmp3lame'
+    : outExt === '.flac' ? 'flac'
+      : outExt === '.ogg' ? 'libvorbis'
+        : 'aac'
+
+  const args = [
+    '-i', inputPath,
+    '-map', '0:v?',
+    '-map', '0:a?',
+    '-c:v', 'copy',
+    '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
+    '-c:a', audioCodec,
+    '-y', outputPath
+  ]
+
+  emitProgress({ id: jobId, kind: 'normalize', title, percent: null, message: 'Ses normalize ediliyor…' })
+
+  runFfmpeg(jobId, 'normalize', title, args, 'Ses normalize ediliyor…',
+    (code, stderr, cancelled, spawnError) => {
+      if (cancelled) {
+        safeUnlink(outputPath)
+        emitComplete({ id: jobId, kind: 'normalize', title, success: false, cancelled: true, error: 'Ses normalize işlemi iptal edildi.' })
+        return
+      }
+      if (code === 0) {
+        emitComplete({ id: jobId, kind: 'normalize', title, success: true, outputPath })
+        return
+      }
+      const error = spawnError ? 'ffmpeg çalıştırılamadı.' : 'Ses normalize edilemedi.'
+      logError({
+        errorType: 'download',
+        errorMessage: error,
+        operation: 'media-normalize',
+        command: formatCommand(getFfmpegPath(), args),
+        exitCode: code,
+        stderr,
+        stackTrace: spawnError?.stack
+      })
+      emitComplete({ id: jobId, kind: 'normalize', title, success: false, error })
     })
 }
 
@@ -480,6 +536,11 @@ export function setupMediaJobHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle('media-subtitle', (_e, opts: Parameters<typeof startSubtitle>[0]) => {
     startSubtitle(opts)
+    return { jobId: opts.jobId }
+  })
+
+  ipcMain.handle('media-normalize', (_e, opts: Parameters<typeof startNormalize>[0]) => {
+    startNormalize(opts)
     return { jobId: opts.jobId }
   })
 

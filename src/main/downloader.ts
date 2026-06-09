@@ -1,13 +1,16 @@
 import { spawn, spawnSync } from 'child_process'
 import { IpcMain, BrowserWindow, app } from 'electron'
 import { existsSync, appendFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import Store from 'electron-store'
 import { statSync } from 'fs'
 import { logError, logStat, logDownload } from './logger'
 import { detectCookieSources, resolveCookieBrowser } from './cookies'
 import { generateThumbnail, downloadRemoteThumbnail } from './thumbnailCache'
+import { resolveYtDlpPath, resolveFfmpegPath, resolveFfprobePath, getYtDlpBin } from './platform'
 
-const DEBUG_LOG = '/tmp/dropmedia_debug.log'
+const DEBUG_LOG = join(tmpdir(), 'dropmedia_debug.log')
 function dbg(msg: string) {
   const line = `[${new Date().toISOString()}] ${msg}\n`
   try { appendFileSync(DEBUG_LOG, line) } catch { /* ignore */ }
@@ -23,10 +26,7 @@ const cancellingDownloads = new Set<string>()
 
 export function getYtDlpPath(): string {
   const custom = store.get('ytDlpPath') as string | undefined
-  if (custom && existsSync(custom)) return custom
-  const userBin = `${process.env.HOME}/.local/bin/yt-dlp`
-  if (existsSync(userBin)) return userBin
-  return 'yt-dlp'
+  return resolveYtDlpPath(custom ?? undefined)
 }
 
 function getDownloadDir(): string {
@@ -37,30 +37,17 @@ function getMainWindow(): BrowserWindow | undefined {
   return BrowserWindow.getAllWindows().find(w => !w.isDestroyed())
 }
 
-const FFMPEG_CANDIDATE_PATHS = [
-  `${process.env.HOME}/.local/bin/ffmpeg`,
-  '/usr/bin/ffmpeg',
-  '/usr/local/bin/ffmpeg',
-  '/opt/homebrew/bin/ffmpeg',
-]
-
 export function hasFfmpeg(): boolean {
-  if (FFMPEG_CANDIDATE_PATHS.some(p => existsSync(p))) return true
-  try { return spawnSync('ffmpeg', ['-version'], { timeout: 2000 }).status === 0 }
+  try { return spawnSync(resolveFfmpegPath(), ['-version'], { timeout: 2000 }).status === 0 }
   catch { return false }
 }
 
 export function getFfmpegPath(): string {
-  return FFMPEG_CANDIDATE_PATHS.find(p => existsSync(p)) ?? 'ffmpeg'
+  return resolveFfmpegPath()
 }
 
 function getFfprobePath(): string {
-  const ffmpegPath = getFfmpegPath()
-  if (ffmpegPath.endsWith('/ffmpeg')) {
-    const ffprobePath = `${ffmpegPath.slice(0, -'ffmpeg'.length)}ffprobe`
-    if (existsSync(ffprobePath)) return ffprobePath
-  }
-  return 'ffprobe'
+  return resolveFfprobePath()
 }
 
 export function probeDuration(outputPath: string): Promise<number | undefined> {
@@ -108,9 +95,7 @@ function checkBinary(bin: string, args: string[], timeoutMs: number): Promise<bo
 }
 
 async function checkFfmpegAvailable(): Promise<boolean> {
-  const userBin = `${process.env.HOME}/.local/bin/ffmpeg`
-  if (existsSync(userBin)) return checkBinary(userBin, ['-version'], 2000)
-  return checkBinary('ffmpeg', ['-version'], 2000)
+  return checkBinary(resolveFfmpegPath(), ['-version'], 2000)
 }
 
 // ── Tor tespiti ───────────────────────────────────────────────────────────────
@@ -127,11 +112,20 @@ function isTwitterUrl(url: string): boolean {
   return u.includes('twitter.com') || u.includes('x.com')
 }
 
+function isAuthenticationRequiredError(text: string): boolean {
+  return text.includes('need to log in') ||
+    text.includes('login required') ||
+    text.includes('cookies-from-browser') ||
+    text.includes('private content') ||
+    text.includes('registered users') ||
+    text.includes('authentication')
+}
+
 export function buildAccessArgs(url: string, opts: { useTor?: boolean; cookieBrowser?: string } = {}): string[] {
   const args: string[] = []
   const useTor = opts.useTor ?? !!(store.get('torEnabled') as boolean | undefined)
   const cookieBrowser = opts.cookieBrowser ?? (store.get('cookieBrowser') as string | undefined)
-  const resolvedCookieBrowser = resolveCookieBrowser(cookieBrowser)
+  const resolvedCookieBrowser = resolveCookieBrowser(cookieBrowser, url)
 
   if (useTor) args.push('--proxy', 'socks5://127.0.0.1:9050')
   if (resolvedCookieBrowser) args.push('--cookies-from-browser', resolvedCookieBrowser)
@@ -152,7 +146,7 @@ function getExpectedStreamCount(opts: DownloadOptions): number {
 function buildArgs(url: string, opts: DownloadOptions): string[] {
   const { format, outputDir, filename, speedLimit, useTor, subtitles, embedSubs, cookieBrowser } = opts
   const dir    = outputDir || getDownloadDir()
-  const output = filename ? `${dir}/${filename}.%(ext)s` : `${dir}/%(title)s [%(id)s].%(ext)s`
+  const output = join(dir, filename ? `${filename}.%(ext)s` : `%(title)s [%(id)s].%(ext)s`)
   const ffmpeg = hasFfmpeg()
   const args: string[] = ['--ignore-config', '--newline', '--no-warnings', '--no-playlist', '--continue', '--retries', '3', '--fragment-retries', '3', '-o', output]
   args.push(...buildAccessArgs(url, { useTor, cookieBrowser }))
@@ -212,7 +206,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
       const isFormatOrCookieError = lower.includes('no video formats')
         || lower.includes('requested format is not available')
         || lower.includes('cookies')
-      if (isFormatOrCookieError) {
+      if (isFormatOrCookieError && !isAuthenticationRequiredError(lower)) {
         const noCookieArgs = [...baseArgs, ...buildAccessArgs(url, { cookieBrowser: '' }), url]
         const retry = await runProcess(bin, noCookieArgs)
         if (retry.code === 0) {
@@ -321,7 +315,9 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
   // yt-dlp kontrolü
   ipcMain.handle('check-ytdlp', () =>
     new Promise<string | null>((resolve) => {
-      const proc = spawn(getYtDlpPath(), ['--version'])
+      // getYtDlpPath() already returns the best available path or bare binary name
+      const bin = getYtDlpPath()
+      const proc = spawn(bin, ['--version'])
       let v = ''
       proc.stdout.on('data', (d: Buffer) => (v += d.toString().trim()))
       proc.on('close', (code) => resolve(code === 0 ? v : null))
@@ -384,7 +380,7 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
 
   dbg(`START id=${id} url=${url} format=${format} expectedStreams=${expectedStreams} cmd: ${formatCommand(bin, args)}`)
 
-  proc.stdout.on('data', (d: Buffer) => {
+  proc.stdout?.on('data', (d: Buffer) => {
     for (const line of d.toString().split('\n')) {
       if (!line.trim()) continue
       stdoutTail = appendTail(stdoutTail, line)
@@ -420,7 +416,7 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
       }
     }
   })
-  proc.stderr.on('data', (d: Buffer) => {
+  proc.stderr?.on('data', (d: Buffer) => {
     const msg = d.toString().trim()
     stderr = appendTail(stderr, msg)
     if (msg) {
@@ -455,7 +451,7 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
     // Cookie'li indirme format hatası verirse cookiesiz yeniden dene
     if (!success && mode !== 'retry-no-cookies' && args.includes('--cookies-from-browser')) {
       const lower = (stderr + stdoutTail).toLowerCase()
-      if (lower.includes('no video formats') || lower.includes('requested format is not available')) {
+      if (!isAuthenticationRequiredError(lower) && (lower.includes('no video formats') || lower.includes('requested format is not available'))) {
         dbg(`FORMAT_ERROR_WITH_COOKIES — retrying without cookies`)
         getMainWindow()?.webContents.send('download-log', { id, msg: 'Cookie ile format hatası alındı, cookiesiz tekrar deneniyor…' })
         startDownloadProcess({ ...opts, cookieBrowser: '' }, 'retry-no-cookies')
@@ -509,8 +505,8 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
     const thumbPromise =
       success && platform === 'discord' && outputPath
         ? generateThumbnail(outputPath).catch(() => null)
-        : success && platform === 'instagram' && opts.thumbnail
-          ? downloadRemoteThumbnail(opts.thumbnail).catch(() => null)
+        : success && platform === 'instagram'
+          ? resolveInstagramDownloadThumbnail(outputPath, opts.thumbnail)
           : Promise.resolve(undefined)
     const thumbnailPath = await thumbPromise
     const duration = success && outputPath
@@ -634,9 +630,9 @@ function friendlyError(stderr: string, url?: string, phase: 'fetch' | 'download'
   const text = stderr.toLowerCase()
   const isTwitter = url ? isTwitterUrl(url) : false
 
-  if (text.includes('unsupported url')) return 'Bu bağlantı desteklenmiyor.'
-  if (text.includes('private')) return 'Bu video gizli veya erişim kısıtlı.'
-  if (text.includes('not a video')) return 'Bu bağlantı video içermiyor.'
+  if (text.includes('unsupported url')) return 'Bu bağlantı desteklenmiyor. Direkt video/reel/tweet/story bağlantısı deneyin.'
+  if (text.includes('private')) return 'Bu içerik gizli veya erişim kısıtlı. Cookie ayarından giriş yaptığınız tarayıcıyı seçip tekrar deneyin.'
+  if (text.includes('not a video')) return 'Bu bağlantı video içermiyor. Direkt medya bağlantısı kullanın.'
   if (text.includes('sign in') || text.includes('login required') || text.includes('unauthorized') || text.includes('http error 401')) {
     return isTwitter
       ? 'X/Twitter bu video için oturum istiyor. Cookie ayarından giriş yaptığınız tarayıcıyı seçip tekrar deneyin.'
@@ -648,7 +644,7 @@ function friendlyError(stderr: string, url?: string, phase: 'fetch' | 'download'
   if (text.includes('http error 403') || text.includes('forbidden')) {
     return isTwitter
       ? 'X/Twitter bu bağlantıya erişimi engelledi. Cookie ayarını etkinleştirip yt-dlp’yi güncelledikten sonra tekrar deneyin.'
-      : 'Platform bu bağlantıya erişimi engelledi. Cookie ayarını veya ağ bağlantınızı kontrol edin.'
+      : 'Platform bu bağlantıya erişimi engelledi. Cookie ayarını ve ağ bağlantınızı kontrol edip tekrar deneyin.'
   }
   if (text.includes('no video formats') || text.includes('requested format is not available')) {
     return 'Seçilen kalite bu video için uygun değil. Başka bir kalite seçip tekrar deneyin.'
@@ -754,6 +750,12 @@ async function withInstagramThumbnailPath(url: string, info: object & { thumbnai
     thumbnail: pathToFileUrl(thumbnailPath),
     thumbnailPath
   }
+}
+
+async function resolveInstagramDownloadThumbnail(outputPath?: string, remoteThumbnail?: string): Promise<string | null> {
+  const remote = remoteThumbnail ? await downloadRemoteThumbnail(remoteThumbnail).catch(() => null) : null
+  if (remote) return remote
+  return outputPath ? generateThumbnail(outputPath).catch(() => null) : null
 }
 
 function pathToFileUrl(filePath: string): string {

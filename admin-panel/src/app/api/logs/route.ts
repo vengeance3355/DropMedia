@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
     let rows = readLocalLogRows().filter(row => row.error_type)
     if (device) rows = rows.filter(row => row.device_id === device)
     if (errorType) rows = rows.filter(row => row.error_type === errorType)
-    return rows
+    return rows.filter(row => !isRoutineAiGeneralLog(row))
   }
 
   const localFallback = () => {
@@ -73,6 +73,7 @@ export async function GET(req: NextRequest) {
   if (error) return localFallback()
 
   const merged = [...(data ?? []), ...localRowsForRequest()]
+    .filter(row => !isRoutineAiGeneralLog(row))
     .filter((row, index, all) => {
       const key = `${row.created_at}-${row.device_id}-${row.error_type}-${row.error_message}`
       return all.findIndex(other => `${other.created_at}-${other.device_id}-${other.error_type}-${other.error_message}` === key) === index
@@ -82,9 +83,17 @@ export async function GET(req: NextRequest) {
   const start = (page - 1) * limit
   return NextResponse.json({
     data: merged.slice(start, start + limit),
-    count: Math.max(count ?? 0, merged.length),
+    count: merged.length,
     page,
     limit,
     source: merged.length > (data?.length ?? 0) ? 'mixed' : 'supabase'
   })
+}
+
+function isRoutineAiGeneralLog(row: { error_type?: string | null; error_message?: string | null; stack_trace?: string | null }): boolean {
+  if (row.error_type !== 'general') return false
+  const text = `${row.error_message ?? ''}\n${row.stack_trace ?? ''}`
+  if (!/"subsystem"\s*:\s*"ai"/i.test(text)) return false
+  if (/İşlem tamamlanamadı|hata|error|failed|timeout|zaman aşım/i.test(row.error_message ?? '')) return false
+  return /^AI (işi|komutu|benchmark|model|runtime|paketi|kurulumu|kaldırma|Python|Ollama)/i.test(row.error_message ?? '')
 }

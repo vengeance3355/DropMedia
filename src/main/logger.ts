@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, readFileSync, renameSync, unlinkSync, write
 import { join } from 'path'
 import Store from 'electron-store'
 import { spawnSync } from 'child_process'
+import { resolveYtDlpPath, resolveFfmpegPath } from './platform'
 
 const store = new Store()
 const sessionId = randomUUID()
@@ -24,21 +25,14 @@ function getDeviceId(): string {
 function getYtDlpVersion(): string {
   try {
     const custom = store.get('ytDlpPath') as string | undefined
-    if (custom && existsSync(custom)) {
-      const r = spawnSync(custom, ['--version'], { timeout: 2000 })
-      return r.stdout?.toString().trim() || 'unknown'
-    }
-    const userBin = `${process.env.HOME}/.local/bin/yt-dlp`
-    const bin = existsSync(userBin) ? userBin : 'yt-dlp'
+    const bin = resolveYtDlpPath(custom ?? undefined)
     const r = spawnSync(bin, ['--version'], { timeout: 2000 })
     return r.stdout?.toString().trim() || 'unknown'
   } catch { return 'unknown' }
 }
 
 function hasFfmpeg(): boolean {
-  const userBin = `${process.env.HOME}/.local/bin/ffmpeg`
-  if (existsSync(userBin)) return true
-  try { return spawnSync('ffmpeg', ['-version'], { timeout: 1000 }).status === 0 }
+  try { return spawnSync(resolveFfmpegPath(), ['-version'], { timeout: 1000 }).status === 0 }
   catch { return false }
 }
 

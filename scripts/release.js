@@ -1,140 +1,140 @@
 #!/usr/bin/env node
-/*
- * DropMedia release helper.
+/**
+ * DropMedia release helper
  *
- * Usage:
- *   node scripts/release.js patch --notes-file release-notes/v1.0.2.md
- *   node scripts/release.js 1.2.0 --notes "Release notes"
- *   node scripts/release.js patch --dry-run
+ * Akış:
+ *   1. Version bump (package.json)
+ *   2. DropMedia build → release/win-unpacked
+ *   3. ZIP → release/DropMedia-win-x64.zip
+ *   4. RELEASE_BODY.md + version.json güncelle
+ *   5. Git commit + push
+ *   6. "stable" GitHub release: zip + version.json upload, body güncelle
+ *
+ * Kullanım:
+ *   node scripts/release.js [patch|minor|major|1.2.3] [--notes "..."] [--notes-file ...] [--dry-run] [--allow-dirty]
  */
 
 const { spawnSync } = require('child_process')
-const fs = require('fs')
+const fs   = require('fs')
 const path = require('path')
 
-const root = path.resolve(__dirname, '..')
-const releaseDir = path.join(root, 'release')
-const notesDir = path.join(root, 'release-notes')
+const root         = path.resolve(__dirname, '..')
+const notesDir     = path.join(root, 'release-notes')
+const bodyFile     = path.join(notesDir, 'RELEASE_BODY.md')
+const versionFile  = path.join(notesDir, 'version.json')
+const releaseDir   = path.join(root, 'release')
+const zipDest      = path.join(releaseDir, 'DropMedia-win-x64.zip')
+
+const STABLE_TAG    = 'stable'
+const RELEASE_TITLE = 'DropMedia'
+
+// ── Ana akış ──────────────────────────────────────────────────────────────────
 
 function main() {
-  const options = parseArgs(process.argv.slice(2))
-  const pkgPath = path.join(root, 'package.json')
-  const pkg = readJson(pkgPath)
-  const currentVersion = pkg.version
-  const nextVersion = resolveNextVersion(currentVersion, options.bump)
-  const tag = `v${nextVersion}`
+  const opts    = parseArgs(process.argv.slice(2))
+  const pkg     = readJson(path.join(root, 'package.json'))
+  const current = pkg.version
+  const next    = resolveNextVersion(current, opts.bump)
+  const gitTag  = `v${next}`
 
-  if (!options.allowDirty) assertCleanGit()
-  assertCommand('gh', ['--version'])
+  if (!opts.allowDirty) assertCleanGit()
+  assertCommand('gh',  ['--version'])
   assertCommand('git', ['--version'])
 
-  const notes = resolveNotes(options, currentVersion, nextVersion)
-  const notesPath = path.join(notesDir, `${tag}.md`)
+  console.log(`\nDropMedia release  ${current} → ${next}`)
 
-  console.log(`DropMedia release ${currentVersion} -> ${nextVersion}`)
-  console.log(`Notes: ${path.relative(root, notesPath)}`)
-  if (options.dryRun) {
-    console.log('Dry run: no files changed, no build, no upload.')
+  if (opts.dryRun) {
+    console.log('Dry run: hiçbir şey değiştirilmedi.')
     return
   }
 
+  // 1. Notlar
+  const notes   = resolveNotes(opts, current, next)
+
+  // 2. RELEASE_BODY.md güncelle
+  const newBody = appendVersionToBody(next, notes)
   fs.mkdirSync(notesDir, { recursive: true })
-  fs.writeFileSync(notesPath, notes.endsWith('\n') ? notes : `${notes}\n`)
-  updateVersionFiles(nextVersion)
+  fs.writeFileSync(bodyFile, newBody)
 
+  // 3. version.json güncelle
+  fs.writeFileSync(versionFile, JSON.stringify({ version: next, notes: notes.trim() }, null, 2))
+
+  // 4. package.json version bump
+  updateVersionFiles(next)
+
+  // 5. Build
   run('npm', ['run', 'build'])
-  const target = process.platform === 'win32' ? '--win' : '--linux'
-  run('npx', ['electron-builder', target, '--publish', 'never'])
-  run('npm', ['run', 'audit:package'])
+  run('npx', ['electron-builder', '--win', '--publish', 'never'])
 
-  const files = collectReleaseFiles(nextVersion)
-  if (files.length === 0) fail(`No release files found for ${nextVersion}`)
+  // 6. ZIP oluştur
+  console.log('\nwin-unpacked zipleniyor...')
+  const winUnpacked = path.join(releaseDir, 'win-unpacked')
+  if (!fs.existsSync(winUnpacked)) fail('win-unpacked bulunamadı.')
+  if (fs.existsSync(zipDest)) fs.rmSync(zipDest)
 
-  run('git', ['add', 'package.json', 'package-lock.json', path.relative(root, notesPath)])
-  run('git', ['commit', '-m', `chore: release ${tag}`])
-  run('git', ['tag', tag])
+  const psZip = `Compress-Archive -Path '${winUnpacked}\\*' -DestinationPath '${zipDest}' -Force`
+  const zipResult = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psZip], {
+    cwd: root, stdio: 'inherit'
+  })
+  if (zipResult.status !== 0) fail('ZIP oluşturulamadı.')
+
+  const zipMb = (fs.statSync(zipDest).size / 1024 / 1024).toFixed(1)
+  console.log(`  DropMedia-win-x64.zip: ${zipMb} MB`)
+
+  // 7. Git commit + tag (local only, stable tag remote'a taşınır)
+  run('git', ['add', 'package.json', 'package-lock.json',
+    path.relative(root, bodyFile), path.relative(root, versionFile)])
+  run('git', ['commit', '-m', `chore: release ${gitTag}`])
+  run('git', ['tag', gitTag])
   run('git', ['push'])
-  run('git', ['push', 'origin', tag])
 
-  const ghArgs = [
-    'release', 'create', tag,
-    ...files,
-    '--title', `DropMedia ${tag}`,
-    '--notes-file', notesPath
-  ]
-  if (options.draft) ghArgs.push('--draft')
-  if (options.prerelease) ghArgs.push('--prerelease')
-  run('gh', ghArgs)
+  // 8. stable tag'i taşı
+  spawnSync('git', ['tag', '-d', STABLE_TAG], { cwd: root })
+  spawnSync('git', ['push', 'origin', `:refs/tags/${STABLE_TAG}`], { cwd: root })
+  run('git', ['tag', STABLE_TAG])
+  run('git', ['push', 'origin', STABLE_TAG])
 
-  console.log(`Release uploaded: https://github.com/vengeance3355/DropMedia/releases/tag/${tag}`)
-  console.log('Evidence:')
-  console.log(`- version=${nextVersion}`)
-  console.log(`- files=${files.map(file => path.basename(file)).join(', ')}`)
-  console.log('- audit=passed')
-}
-
-function parseArgs(args) {
-  const options = {
-    bump: 'patch',
-    notes: '',
-    notesFile: '',
-    dryRun: false,
-    draft: false,
-    prerelease: false,
-    allowDirty: false
+  // 9. GitHub release güncelle
+  const check = spawnSync('gh', ['release', 'view', STABLE_TAG], { cwd: root, encoding: 'utf8' })
+  if (check.status === 0) {
+    // Güncelle
+    run('gh', ['release', 'edit', STABLE_TAG, '--title', RELEASE_TITLE, '--notes', newBody, '--draft=false'])
+    run('gh', ['release', 'upload', STABLE_TAG, zipDest, '--clobber'])
+    run('gh', ['release', 'upload', STABLE_TAG, versionFile, '--clobber'])
+  } else {
+    // İlk oluştur
+    run('gh', ['release', 'create', STABLE_TAG,
+      '--title', RELEASE_TITLE, '--notes', newBody,
+      zipDest, versionFile
+    ])
   }
 
-  if (args[0] && !args[0].startsWith('--')) options.bump = args.shift()
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]
-    if (arg === '--notes') options.notes = args[++i] ?? ''
-    else if (arg === '--notes-file') options.notesFile = args[++i] ?? ''
-    else if (arg === '--dry-run') options.dryRun = true
-    else if (arg === '--draft') options.draft = true
-    else if (arg === '--prerelease') options.prerelease = true
-    else if (arg === '--allow-dirty') options.allowDirty = true
-    else fail(`Unknown option: ${arg}`)
+  console.log(`\n✓ Release tamamlandı: v${next}`)
+  console.log(`  https://github.com/vengeance3355/DropMedia/releases/tag/${STABLE_TAG}`)
+}
+
+// ── Yardımcılar ───────────────────────────────────────────────────────────────
+
+function appendVersionToBody(version, notes) {
+  const existing = fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, 'utf8').trimEnd() : defaultBody()
+  return existing + `\n\n---\n\n# ${version}\n${notes.trim()}\n`
+}
+
+function defaultBody() {
+  return `## DropMedia\n\nYouTube, Instagram, Twitter ve daha fazlasından video ve ses indirme uygulaması. yt-dlp + ffmpeg tabanlı altyapısıyla çoklu platform desteği, format/kalite seçimi, indirme kuyruğu yönetimi, otomatik pano algılama, çerez tabanlı özel içerik indirme, medya dönüştürme, altyazı çıkarma ve mini mod sunar. Windows için tasarlanmış, Electron tabanlı modern arayüz.`
+}
+
+function resolveNotes(opts, current, next) {
+  if (opts.notesFile) {
+    const f = path.resolve(root, opts.notesFile)
+    if (!fs.existsSync(f)) fail(`Dosya bulunamadı: ${opts.notesFile}`)
+    return fs.readFileSync(f, 'utf8').trim()
   }
-  return options
-}
-
-function resolveNextVersion(current, bump) {
-  if (isValidSemver(bump)) return bump
-  const valid = new Set(['patch', 'minor', 'major'])
-  if (!valid.has(bump)) fail(`Invalid bump: ${bump}. Use patch, minor, major, or exact semver.`)
-  const [major, minor, patch] = current.split('.').map(Number)
-  if (![major, minor, patch].every(Number.isFinite)) fail(`Invalid package version: ${current}`)
-  if (bump === 'major') return `${major + 1}.0.0`
-  if (bump === 'minor') return `${major}.${minor + 1}.0`
-  return `${major}.${minor}.${patch + 1}`
-}
-
-function isValidSemver(value) {
-  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/.test(value)
-}
-
-function resolveNotes(options, currentVersion, nextVersion) {
-  if (options.notesFile) {
-    const full = path.resolve(root, options.notesFile)
-    if (!fs.existsSync(full)) fail(`Notes file not found: ${options.notesFile}`)
-    return fs.readFileSync(full, 'utf8')
-  }
-  if (options.notes) return options.notes
-
-  const previousTag = capture('git', ['describe', '--tags', '--abbrev=0'], { allowFail: true })
-  const range = previousTag ? `${previousTag}..HEAD` : ''
+  if (opts.notes) return opts.notes.trim()
+  const prev = capture('git', ['describe', '--tags', '--abbrev=0', '--match=v*'], { allowFail: true })
+  const range = prev ? `${prev}..HEAD` : ''
   const log = capture('git', ['log', '--pretty=format:- %s', range].filter(Boolean), { allowFail: true })
-  return [
-    `DropMedia v${nextVersion}`,
-    '',
-    'Changes:',
-    log || `- Release from v${currentVersion} to v${nextVersion}`,
-    '',
-    'Validation required before publishing:',
-    '- npm run build',
-    '- npm run audit:package',
-    '- AppImage/deb smoke test'
-  ].join('\n')
+  return log || `- ${next} sürümüne güncellendi`
 }
 
 function updateVersionFiles(version) {
@@ -142,7 +142,6 @@ function updateVersionFiles(version) {
   const pkg = readJson(pkgPath)
   pkg.version = version
   fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`)
-
   const lockPath = path.join(root, 'package-lock.json')
   if (fs.existsSync(lockPath)) {
     const lock = readJson(lockPath)
@@ -152,55 +151,61 @@ function updateVersionFiles(version) {
   }
 }
 
-function collectReleaseFiles(version) {
-  if (!fs.existsSync(releaseDir)) return []
-  return fs.readdirSync(releaseDir)
-    .filter(file => {
-      if (file === 'latest.yml' || file === 'latest-linux.yml') return true
-      if (!file.includes(version)) return false
-      return /\.(AppImage|deb|exe|blockmap|yml|yaml)$/i.test(file)
-    })
-    .map(file => path.join(releaseDir, file))
-    .filter(file => fs.statSync(file).isFile())
+function resolveNextVersion(current, bump) {
+  if (isValidSemver(bump)) return bump
+  if (!['patch', 'minor', 'major'].includes(bump)) fail(`Geçersiz bump: ${bump}`)
+  const [maj, min, pat] = current.split('.').map(Number)
+  if (bump === 'major') return `${maj + 1}.0.0`
+  if (bump === 'minor') return `${maj}.${min + 1}.0`
+  return `${maj}.${min}.${pat + 1}`
+}
+
+function isValidSemver(v) {
+  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$/.test(v)
+}
+
+function parseArgs(args) {
+  const opts = { bump: 'patch', notes: '', notesFile: '', dryRun: false, allowDirty: false }
+  if (args[0] && !args[0].startsWith('--')) opts.bump = args.shift()
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '--notes')        opts.notes     = args[++i] ?? ''
+    else if (a === '--notes-file')  opts.notesFile = args[++i] ?? ''
+    else if (a === '--dry-run')     opts.dryRun    = true
+    else if (a === '--allow-dirty') opts.allowDirty = true
+    else fail(`Bilinmeyen seçenek: ${a}`)
+  }
+  return opts
 }
 
 function assertCleanGit() {
-  const status = capture('git', ['status', '--porcelain'])
-  if (status) {
-    fail('Git worktree is dirty. Commit/stash changes first, or pass --allow-dirty intentionally.')
+  if (capture('git', ['status', '--porcelain'])) fail('Git worktree temiz değil.')
+}
+
+function assertCommand(cmd, args) {
+  if (spawnSync(cmd, args, { cwd: root, stdio: 'ignore' }).status !== 0) fail(`Komut bulunamadı: ${cmd}`)
+}
+
+function run(cmd, args) {
+  console.log(`  > ${cmd} ${args.slice(0, 3).join(' ')}`)
+  const r = spawnSyncCompat(cmd, args, { cwd: root, stdio: 'inherit' })
+  if (r.status !== 0) fail(`Başarısız: ${cmd} ${args.join(' ')}`)
+}
+
+function capture(cmd, args, opts = {}) {
+  const r = spawnSyncCompat(cmd, args, { cwd: root, encoding: 'utf8' })
+  if (r.status !== 0 && !opts.allowFail) fail(`Başarısız: ${cmd}`)
+  return (r.stdout || '').trim()
+}
+
+function spawnSyncCompat(cmd, args, opts) {
+  if (process.platform === 'win32' && (cmd === 'npm' || cmd === 'npx')) {
+    return spawnSync(cmd, args, { ...opts, shell: true })
   }
+  return spawnSync(cmd, args, opts)
 }
 
-function assertCommand(command, args) {
-  const result = spawn(command, args, { cwd: root, stdio: 'ignore' })
-  if (result.status !== 0) fail(`Required command failed: ${command}`)
-}
-
-function run(command, args) {
-  const result = spawn(command, args, { cwd: root, stdio: 'inherit' })
-  if (result.status !== 0) fail(`Command failed: ${command} ${args.join(' ')}`)
-}
-
-function capture(command, args, opts = {}) {
-  const result = spawn(command, args, { cwd: root, encoding: 'utf8' })
-  if (result.status !== 0 && !opts.allowFail) fail(`Command failed: ${command} ${args.join(' ')}`)
-  return result.stdout.trim()
-}
-
-function spawn(command, args, options) {
-  if (process.platform === 'win32' && (command === 'npm' || command === 'npx')) {
-    return spawnSync('cmd.exe', ['/d', '/s', '/c', `${command}.cmd ${args.join(' ')}`], options)
-  }
-  return spawnSync(command, args, options)
-}
-
-function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, 'utf8'))
-}
-
-function fail(message) {
-  console.error(message)
-  process.exit(1)
-}
+function readJson(f) { return JSON.parse(fs.readFileSync(f, 'utf8')) }
+function fail(msg)   { console.error(`\nHata: ${msg}`); process.exit(1) }
 
 main()

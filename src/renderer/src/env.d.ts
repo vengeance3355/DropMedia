@@ -1,6 +1,18 @@
 /// <reference types="vite/client" />
 import {
+  AdminRelease,
+  AdminReleasePublishInput,
+  AdminStatus,
+  AiChatModel,
+  AiChatSendRequest,
+  AiChatSendResult,
+  AiChatSession,
+  AiJob,
+  AiJobStartRequest,
+  AiBenchmarkResult,
+  AiSystemReport,
   AiToolState,
+  AiToolStatus,
   LibraryRecord,
   LinkInboxItem,
   PostProcessRecipe,
@@ -59,6 +71,15 @@ declare global {
       repairThumbnail: (id: string) => Promise<{ success: boolean; item?: object; error?: string }>
 
       // Olaylar
+      startConvert:      (req: object) => Promise<{ jobId: string }>
+      startSubtitleJob:  (req: object) => Promise<{ jobId: string }>
+      startNormalizeJob: (req: object) => Promise<{ jobId: string }>
+      cancelMediaJob:    (jobId: string) => Promise<boolean>
+      listSubtitleLangs: (url: string, cookieBrowser?: string) => Promise<{ manual: string[]; auto: string[] }>
+      findSiblingSubtitle: (videoPath: string) => Promise<string | null>
+      onMediaJobProgress: (cb: (d: object) => void) => void
+      onMediaJobComplete: (cb: (d: object) => void) => void
+      offMediaJobListeners: () => void
       onDownloadProgress: (cb: (d: object) => void) => void
       onDownloadComplete: (cb: (d: object) => void) => void
       onDownloadPaused:   (cb: (d: object) => void) => void
@@ -102,6 +123,31 @@ declare global {
       onWatchItemsFound:    (cb: (data: { source: WatchSource; items: WatchItem[] }) => void) => void
       offProductListeners:  () => void
 
+      // Local AI
+      getAiToolsStatus: () => Promise<AiToolStatus[]>
+      getAiSystemReport: () => Promise<AiSystemReport>
+      benchmarkAiTool: (toolId: AiToolState['id']) => Promise<AiBenchmarkResult>
+      installAiTool:    (toolId: AiToolState['id']) => Promise<{ jobId: string; existing?: boolean }>
+      installAiModel:   (modelId: string) => Promise<{ jobId: string; existing?: boolean }>
+      installAllAiModels: () => Promise<{ jobId: string; existing?: boolean }>
+      repairAiTool:     (toolId: AiToolState['id']) => Promise<{ jobId: string; existing?: boolean }>
+      removeAiTool:     (toolId: AiToolState['id']) => Promise<{ jobId: string; existing?: boolean }>
+      startAiJob:       (req: AiJobStartRequest) => Promise<{ jobId: string }>
+      cancelAiJob:      (jobId: string) => Promise<boolean>
+      pauseAiJob:       (jobId: string) => Promise<boolean>
+      resumeAiJob:      (jobId: string) => Promise<boolean>
+      listAiJobs:       () => Promise<AiJob[]>
+      deleteAiJob:      (jobId: string) => Promise<AiJob[]>
+      clearAiJobs:      () => Promise<AiJob[]>
+      onAiJobProgress:  (cb: (job: AiJob) => void) => void
+      onAiJobComplete:  (cb: (job: AiJob) => void) => void
+      offAiJobListeners: () => void
+      listAiChatModels:   () => Promise<AiChatModel[]>
+      listAiChatSessions: () => Promise<AiChatSession[]>
+      sendAiChatMessage:  (req: AiChatSendRequest) => Promise<AiChatSendResult>
+      deleteAiChatSession:(sessionId: string) => Promise<AiChatSession[]>
+      clearAiChatSessions:() => Promise<AiChatSession[]>
+
       // Supabase sync
       getSyncStatus:        () => Promise<SyncStatus>
       signUpSync:           (email: string, password: string) => Promise<SyncStatus>
@@ -109,6 +155,14 @@ declare global {
       signOutSync:          () => Promise<SyncStatus>
       pushProductState:     (state: ProductHubState) => Promise<{ ok: true; syncedAt: number }>
       pullProductState:     () => Promise<{ data: Partial<ProductHubState> | null; syncedAt?: string }>
+
+      // Admin
+      getAdminStatus:       () => Promise<AdminStatus>
+      loginAdmin:           (password: string) => Promise<AdminStatus>
+      logoutAdmin:          () => Promise<AdminStatus>
+      listAdminReleases:    () => Promise<{ data?: AdminRelease[]; count?: number; source?: string }>
+      saveAdminRelease:     (payload: Partial<AdminRelease>) => Promise<{ data?: AdminRelease }>
+      publishAdminRelease:  (payload: AdminReleasePublishInput) => Promise<{ ok: boolean; workflow?: string; ref?: string; target?: string }>
 
       // Sistem
       selectFolder:       () => Promise<string | null>
@@ -118,8 +172,11 @@ declare global {
       showItemInFolder:   (path: string) => Promise<void>
       openUrl:            (url: string) => Promise<void>
       openFileInPlayer:   (path: string) => Promise<void>
-      startFileDrag:      (path: string) => Promise<{ success: boolean; error?: string }>
+      getThumbnail:       (path: string) => Promise<string | null>
+      copyFileToClipboard: (path: string) => Promise<{ ok: boolean; error?: string }>
+      startFileDrag:      (path: string, iconDataUrl?: string) => Promise<{ success: boolean; error?: string }>
       getAppVersion:      () => Promise<string>
+      logClientError:     (payload: { message?: string; stack?: string; operation?: string; details?: Record<string, unknown> }) => Promise<{ ok: true; localLogPath?: string }>
 
       // Güncelleme
       checkForUpdates: () => Promise<void>

@@ -53,6 +53,7 @@ const api = {
   // Medya işleri (dönüştürme + altyazı) — arka planda main process'te çalışır
   startConvert:      (req: object) => ipcRenderer.invoke('media-convert', req),
   startSubtitleJob:  (req: object) => ipcRenderer.invoke('media-subtitle', req),
+  startNormalizeJob: (req: object) => ipcRenderer.invoke('media-normalize', req),
   cancelMediaJob:    (jobId: string) => ipcRenderer.invoke('media-job-cancel', jobId),
   listSubtitleLangs: (url: string, cookieBrowser?: string) => ipcRenderer.invoke('subtitle-list-langs', url, cookieBrowser),
   findSiblingSubtitle: (videoPath: string) => ipcRenderer.invoke('subtitle-find-sibling', videoPath),
@@ -128,6 +129,34 @@ const api = {
     ipcRenderer.removeAllListeners('watch-items-found')
   },
 
+  // Local AI
+  getAiToolsStatus: () => ipcRenderer.invoke('ai-tools-status'),
+  getAiSystemReport: () => ipcRenderer.invoke('ai-system-report'),
+  benchmarkAiTool: (toolId: string) => ipcRenderer.invoke('ai-tool-benchmark', toolId),
+  installAiTool:    (toolId: string) => ipcRenderer.invoke('ai-tool-install', toolId),
+  installAiModel:   (modelId: string) => ipcRenderer.invoke('ai-model-install', modelId),
+  installAllAiModels: () => ipcRenderer.invoke('ai-model-install-all'),
+  repairAiTool:     (toolId: string) => ipcRenderer.invoke('ai-tool-repair', toolId),
+  removeAiTool:     (toolId: string) => ipcRenderer.invoke('ai-tool-remove', toolId),
+  startAiJob:       (req: object) => ipcRenderer.invoke('ai-job-start', req),
+  cancelAiJob:      (jobId: string) => ipcRenderer.invoke('ai-job-cancel', jobId),
+  pauseAiJob:       (jobId: string) => ipcRenderer.invoke('ai-job-pause', jobId),
+  resumeAiJob:      (jobId: string) => ipcRenderer.invoke('ai-job-resume', jobId),
+  listAiJobs:       () => ipcRenderer.invoke('ai-jobs-list'),
+  deleteAiJob:      (jobId: string) => ipcRenderer.invoke('ai-job-delete', jobId),
+  clearAiJobs:      () => ipcRenderer.invoke('ai-jobs-clear'),
+  listAiChatModels:   () => ipcRenderer.invoke('ai-chat-models'),
+  listAiChatSessions: () => ipcRenderer.invoke('ai-chat-sessions'),
+  sendAiChatMessage:  (req: object) => ipcRenderer.invoke('ai-chat-send', req),
+  deleteAiChatSession:(sessionId: string) => ipcRenderer.invoke('ai-chat-delete', sessionId),
+  clearAiChatSessions:() => ipcRenderer.invoke('ai-chat-clear'),
+  onAiJobProgress:  (cb: (d: object) => void) => ipcRenderer.on('ai-job-progress', (_e, d) => cb(d)),
+  onAiJobComplete:  (cb: (d: object) => void) => ipcRenderer.on('ai-job-complete', (_e, d) => cb(d)),
+  offAiJobListeners: () => {
+    ipcRenderer.removeAllListeners('ai-job-progress')
+    ipcRenderer.removeAllListeners('ai-job-complete')
+  },
+
   // Supabase sync
   getSyncStatus:        () => ipcRenderer.invoke('sync-status'),
   signUpSync:           (email: string, password: string) => ipcRenderer.invoke('sync-sign-up', email, password),
@@ -135,6 +164,14 @@ const api = {
   signOutSync:          () => ipcRenderer.invoke('sync-sign-out'),
   pushProductState:     (state: object) => ipcRenderer.invoke('sync-push-product-state', state),
   pullProductState:     () => ipcRenderer.invoke('sync-pull-product-state'),
+
+  // Admin
+  getAdminStatus:       () => ipcRenderer.invoke('admin-status'),
+  loginAdmin:           (password: string) => ipcRenderer.invoke('admin-login', password),
+  logoutAdmin:          () => ipcRenderer.invoke('admin-logout'),
+  listAdminReleases:    () => ipcRenderer.invoke('admin-releases-list'),
+  saveAdminRelease:     (payload: object) => ipcRenderer.invoke('admin-release-save', payload),
+  publishAdminRelease:  (payload: object) => ipcRenderer.invoke('admin-release-publish', payload),
 
   // Sistem
   getThumbnail:       (path: string) => ipcRenderer.invoke('get-thumbnail', path),
@@ -148,6 +185,7 @@ const api = {
   copyFileToClipboard: (p: string) => ipcRenderer.invoke('copy-file-to-clipboard', p),
   startFileDrag:      (p: string, iconDataUrl?: string) => ipcRenderer.invoke('start-file-drag', p, iconDataUrl),
   getAppVersion:      () => ipcRenderer.invoke('app-version'),
+  logClientError:     (payload: object) => ipcRenderer.invoke('client-error-log', payload),
 
   // Güncelleme
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),

@@ -4,11 +4,17 @@ import { resolve } from 'path'
 
 let _client: SupabaseClient | null = null
 
+export function getSupabaseEnv(): { url?: string; serviceRoleKey?: string } {
+  const rootEnv = readRootEnv()
+  return {
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? rootEnv.SUPABASE_URL,
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? rootEnv.SUPABASE_SERVICE_ROLE_KEY
+  }
+}
+
 export function getSupabase(): SupabaseClient {
   if (!_client) {
-    const rootEnv = readRootEnv()
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? rootEnv.SUPABASE_URL
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? rootEnv.SUPABASE_SERVICE_ROLE_KEY
+    const { url, serviceRoleKey: key } = getSupabaseEnv()
     if (!url || !key) throw new Error('Supabase env vars missing')
     _client = createClient(url, key)
   }

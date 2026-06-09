@@ -12,7 +12,8 @@ const REQUIRED_TABLES = [
   'download_library',
   'watch_sources',
   'watch_items',
-  'app_releases'
+  'app_releases',
+  'admin_users'
 ]
 const ROOT = process.cwd()
 const AUTO = process.argv.includes('--auto')

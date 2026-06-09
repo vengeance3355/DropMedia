@@ -89,7 +89,7 @@ export function DownloadQueue({ items, onCancel, onPause, onResume, onRedownload
       {hasCompleted && (
         <div className="flex justify-end gap-2">
           <button onClick={onClearCompleted} className="rounded-lg px-2 py-1 text-xs text-zinc-500 transition-colors hover:bg-white/[0.04] hover:text-zinc-300">
-            Tamamlananları temizle
+            {isHistoryView ? 'Geçmişi temizle' : 'Tamamlananları temizle'}
           </button>
         </div>
       )}
@@ -132,7 +132,7 @@ function HistoryCard({ item, onRedownload, onRemove, onShowItemInFolder, onRepai
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1">
           <MediaListItem item={item} showActions />
-          {item.error && <p className="mt-2 truncate text-xs text-red-400/80">{item.error}</p>}
+          {item.error && <p title={item.error} className="mt-2 line-clamp-2 text-xs text-red-400/80">{item.error}</p>}
         </div>
         <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11px] font-medium ${cfg.color}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
@@ -320,7 +320,7 @@ function DownloadCard({ item, onCancel, onPause, onResume, onRedownload, onRemov
           {activityMsg && status === 'fetching' && (
             <p className="mt-2 text-xs text-blue-400/70 animate-pulse">{activityMsg}</p>
           )}
-          {status === 'error' && error && <p className="mt-2 truncate text-xs text-red-400/80">{error}</p>}
+          {status === 'error' && error && <p title={error} className="mt-2 line-clamp-2 text-xs text-red-400/80">{error}</p>}
           {convertError && <p className="mt-2 text-xs text-red-400/80">{convertError}</p>}
         </div>
 
