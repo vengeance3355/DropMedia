@@ -143,8 +143,16 @@ declare global {
       listAiChatModels:   () => Promise<AiChatModel[]>
       listAiChatSessions: () => Promise<AiChatSession[]>
       sendAiChatMessage:  (req: AiChatSendRequest) => Promise<AiChatSendResult>
+      stopAiChat:         (sessionId?: string) => Promise<void>
       deleteAiChatSession:(sessionId: string) => Promise<AiChatSession[]>
       clearAiChatSessions:() => Promise<AiChatSession[]>
+      // Active AI model
+      getActiveAiModel:   () => Promise<string | null>
+      setActiveAiModel:   (id: string) => Promise<string>
+      // Streaming chat events
+      onAiChatToken:    (cb: (d: { sessionId: string; delta: string }) => void) => void
+      onAiChatDone:     (cb: (d: { sessionId: string }) => void) => void
+      offAiChatStream:  () => void
 
       // Supabase sync
       getSyncStatus:        () => Promise<SyncStatus>

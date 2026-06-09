@@ -246,6 +246,7 @@ export interface AiChatMessage {
   content: string
   createdAt: number
   model?: string
+  citations?: AiChatCitation[]
 }
 
 export interface AiChatSession {
@@ -284,15 +285,21 @@ export interface AiSystemSpecs {
   freeMemoryBytes: number
   diskFreeBytes: number
   diskTotalBytes: number
+  gpu?: string
 }
 
 export interface AiRequirementCheck {
-  key: 'platform' | 'cpu' | 'memory' | 'freeMemory' | 'disk'
+  key: 'platform' | 'cpu' | 'memory' | 'freeMemory' | 'disk' | 'gpu'
   label: string
   ok: boolean
   actual: string
   required: string
   detail?: string
+}
+
+export interface AiChatCitation {
+  ref: string
+  snippet: string
 }
 
 export interface AiToolRequirementReport {

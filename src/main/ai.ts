@@ -9,6 +9,7 @@ import { delimiter, dirname, extname, basename, join } from 'path'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { getFfmpegPath, hasFfmpeg } from './downloader'
 import { logError } from './logger'
+import { buildRagContext } from './aiRag'
 
 type AiToolId = 'whisper' | 'ollama' | 'argos'
 type AiJobKind = 'install' | 'repair' | 'remove' | 'transcript' | 'summary' | 'translate' | 'titles' | 'benchmark'
@@ -78,6 +79,7 @@ interface AiSystemSpecs {
   freeMemoryBytes: number
   diskFreeBytes: number
   diskTotalBytes: number
+  gpu?: string
 }
 
 interface AiRequirementCheck {
@@ -259,6 +261,13 @@ const installTrackers = new Map<string, InstallTracker>()
 const chatSessionLimit = 50
 const chatMessageLimit = 80
 const chatStoreKey = 'ai.chat.sessions'
+
+// Tek seferlik tespit edilen GPU bilgisi (best-effort). Tekrar tekrar nvidia-smi
+// çalıştırmamak için cache'lenir.
+let cachedGpuLabel: string | null | undefined
+// Bu uygulama tarafından başlatılan detached "ollama serve" sürecinin PID'i.
+// app before-quit'te kapatmak için izlenir.
+let spawnedOllamaServePid: number | undefined
 
 const toolLabels: Record<AiToolId, string> = {
   whisper: 'Whisper Local',
@@ -708,6 +717,7 @@ async function ensureOllamaServer(job: AiJob, bin: string): Promise<void> {
       detached: true,
       stdio: 'ignore'
     })
+    if (typeof proc.pid === 'number') spawnedOllamaServePid = proc.pid
     proc.unref()
   } catch (err) {
     throw new Error(`Ollama server başlatılamadı: ${err instanceof Error ? err.message : String(err)}`)
@@ -1227,6 +1237,11 @@ function runJobCommand(
     }
 
     activeJobs.set(job.id, proc)
+    // Cancel race: spawn ile activeJobs.set arasında bir iptal gelmiş olabilir.
+    // cancelJob o anda proc'u bulamayıp öldüremediyse, burada hemen öldür.
+    if (cancelledJobs.has(job.id)) {
+      try { proc.kill('SIGTERM') } catch { /* ignore */ }
+    }
     if (timeoutMs && timeoutMs > 0) {
       timeout = setTimeout(() => {
         timedOut = true
@@ -2127,7 +2142,35 @@ function tokensPerSecond(count?: number, durationMs?: number): number | undefine
   return count / (durationMs / 1000)
 }
 
-function readAiSystemSpecs(): AiSystemSpecs {
+// GPU'yu best-effort tespit et: nvidia-smi varsa NVIDIA adı+VRAM; macOS'ta Metal.
+// Sonuç cache'lenir; hiçbir koşulda throw etmez.
+async function detectGpu(): Promise<string | undefined> {
+  if (cachedGpuLabel !== undefined) return cachedGpuLabel ?? undefined
+  let label: string | null = null
+  try {
+    if (process.platform === 'darwin') {
+      label = 'Apple GPU (Metal)'
+    } else {
+      const result = await runSimple('nvidia-smi', ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits'], undefined, 6_000)
+      if (result.code === 0) {
+        const line = result.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean)[0]
+        if (line) {
+          const [name, memMib] = line.split(',').map(part => part.trim())
+          const mem = Number(memMib)
+          label = name
+            ? `${name}${Number.isFinite(mem) && mem > 0 ? ` (${(mem / 1024).toFixed(mem >= 1024 ? 0 : 1)} GB VRAM)` : ''}`
+            : null
+        }
+      }
+    }
+  } catch {
+    label = null
+  }
+  cachedGpuLabel = label
+  return label ?? undefined
+}
+
+function readAiSystemSpecs(gpu?: string): AiSystemSpecs {
   mkdirSync(aiDataDir(), { recursive: true })
   const cpuList = cpus()
   const disk = statfsSync(aiDataDir())
@@ -2140,7 +2183,31 @@ function readAiSystemSpecs(): AiSystemSpecs {
     totalMemoryBytes: totalmem(),
     freeMemoryBytes: freemem(),
     diskFreeBytes: disk.bavail * disk.bsize,
-    diskTotalBytes: disk.blocks * disk.bsize
+    diskTotalBytes: disk.blocks * disk.bsize,
+    gpu
+  }
+}
+
+// Çok GB'lık model çekmeden önce disk yeterli mi kontrol et. Yetersizse Türkçe
+// hata fırlatır. weightGb model ağırlığı + headroom (varsayılan 2 GB) ile karşılaştırır.
+function assertDiskSpaceForModel(weightGb: number | undefined, label: string): void {
+  if (!weightGb || !Number.isFinite(weightGb) || weightGb <= 0) return
+  let freeBytes: number
+  try {
+    mkdirSync(aiDataDir(), { recursive: true })
+    const disk = statfsSync(aiDataDir())
+    freeBytes = disk.bavail * disk.bsize
+  } catch {
+    // Disk okunamıyorsa engelleme — kurulum kendi hatasını üretsin.
+    return
+  }
+  const headroomBytes = 2 * gib
+  const requiredBytes = Math.ceil(weightGb * gib) + headroomBytes
+  if (freeBytes < requiredBytes) {
+    throw new Error(
+      `Disk alanı yetersiz: ${label} için yaklaşık ${formatSystemBytes(requiredBytes)} boş alan gerekiyor, ` +
+      `ancak yalnızca ${formatSystemBytes(freeBytes)} boş alan var. Yer açıp tekrar deneyin.`
+    )
   }
 }
 
@@ -2186,8 +2253,9 @@ function recommendOllamaModel(model: AiChatModel, specs: AiSystemSpecs, installe
   }
 }
 
-function getAiSystemReport(): AiSystemReport {
-  const specs = readAiSystemSpecs()
+async function getAiSystemReport(): Promise<AiSystemReport> {
+  const gpu = await detectGpu()
+  const specs = readAiSystemSpecs(gpu)
 
   return {
     specs,
@@ -2509,6 +2577,9 @@ async function installOllamaModel(job: AiJob, modelId: string): Promise<void> {
     return
   }
 
+  // Disk-space gate: çok GB'lık model çekmeden önce yeterli boş alan var mı?
+  assertDiskSpaceForModel(model?.weightGb, model?.label ?? modelId)
+
   const pull = await runJobCommand(
     job,
     ollamaBin,
@@ -2542,6 +2613,9 @@ async function installAllOllamaModels(job: AiJob): Promise<void> {
       })
       continue
     }
+
+    // Disk-space gate: her model çekiminden hemen önce yeterli boş alan kontrolü.
+    assertDiskSpaceForModel(model.weightGb, model.label)
 
     const pull = await runJobCommand(
       job,
@@ -2755,7 +2829,29 @@ async function sendAiChatMessage(req: AiChatSendRequest): Promise<AiChatSendResu
   // Serbest sohbet HER ZAMAN cevap verir — anahtar kelimeyle ("özet/başlık/çevir")
   // job kaçırma + dosya yoksa throw etme davranışı kaldırıldı. Transcript/özet/çeviri
   // gibi işler artık açık butonlarla / video bağlamı (RAG) ile yapılır.
-  const response = await runOllamaChat(model, buildChatPrompt(session, messageText))
+  const prompt = await buildChatPrompt(session, messageText)
+  const win = mainWindow()
+  let response: string
+  try {
+    response = await runOllamaChat(model, prompt, {
+      sessionId: session.id,
+      onToken: (delta) => {
+        // Üretim sırasında her token parçasını chat penceresine ilet.
+        try {
+          if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+            win.webContents.send('ai-chat-token', { sessionId: session.id, delta })
+          }
+        } catch { /* pencere kapandıysa yut */ }
+      }
+    })
+  } finally {
+    // Üretim bittiğinde (başarı, hata veya stop) akışın bittiğini bildir.
+    try {
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send('ai-chat-done', { sessionId: session.id })
+      }
+    } catch { /* ignore */ }
+  }
   const assistant = chatAssistantMessage(response, model)
   // History race fix: 10dk'ya kadar await sonrası `session` bayatlamış olabilir;
   // store'dan id ile TAZE oku, asistan mesajını ona ekle (eşzamanlı mesajları ezme).
@@ -2769,6 +2865,25 @@ async function sendAiChatMessage(req: AiChatSendRequest): Promise<AiChatSendResu
 
 function chatAssistantMessage(content: string, model: string): AiChatMessage {
   return { id: randomUUID(), role: 'assistant', content, createdAt: Date.now(), model }
+}
+
+// Devam eden bir chat üretimini durdurur. activeHttpJobs'taki 'chat:'+sessionId
+// kaydını destroy eder; sendAiChatMessage o ana kadar streamlenen kısmi metinle
+// resolve eder. sessionId yoksa o an aktif olan tek chat isteğini durdurur.
+async function stopAiChat(sessionId?: string): Promise<void> {
+  if (sessionId) {
+    const job = activeHttpJobs.get(`chat:${sessionId}`)
+    if (job) {
+      activeHttpJobs.delete(`chat:${sessionId}`)
+      try { job.destroy(new Error('__AI_STOPPED__')) } catch { /* ignore */ }
+    }
+    return
+  }
+  for (const [key, job] of activeHttpJobs) {
+    if (!key.startsWith('chat:')) continue
+    activeHttpJobs.delete(key)
+    try { job.destroy(new Error('__AI_STOPPED__')) } catch { /* ignore */ }
+  }
 }
 
 function detectChatAction(message: string): Exclude<AiJobKind, 'install' | 'repair' | 'remove' | 'benchmark'> | null {
@@ -2787,8 +2902,28 @@ function aiActionText(kind: Exclude<AiJobKind, 'install' | 'repair' | 'remove' |
   return 'TR çeviri'
 }
 
-function buildChatPrompt(session: AiChatSession, userMessage: string): string {
-  const context = session.attachmentPath ? readChatAttachmentContext(session.attachmentPath) : ''
+async function buildChatPrompt(session: AiChatSession, userMessage: string): Promise<string> {
+  let context = ''
+  let citationsBlock = ''
+  if (session.attachmentPath) {
+    // RAG: video transcriptinden sorguya en yakın parçaları getir. buildRagContext
+    // hiçbir zaman throw etmez; hata/embed eksikliğinde ilk ~6000 karaktere düşer.
+    try {
+      const rag = await buildRagContext(session.attachmentPath, userMessage)
+      const ragContext = (rag.context || '').trim()
+      context = ragContext
+        ? `Bağlı dosya: ${basename(session.attachmentPath)}\n---\n${ragContext}`
+        : readChatAttachmentContext(session.attachmentPath)
+      if (rag.citations && rag.citations.length > 0) {
+        citationsBlock = rag.citations
+          .map(citation => `[${citation.ref}] ${citation.snippet}`)
+          .join('\n')
+      }
+    } catch {
+      // Güvenlik ağı: RAG modülü beklenmedik şekilde patlarsa eski davranışa düş.
+      context = readChatAttachmentContext(session.attachmentPath)
+    }
+  }
   const history = session.messages
     .slice(-10)
     .map(message => `${message.role === 'user' ? 'Kullanıcı' : 'Asistan'}: ${message.content}`)
@@ -2796,7 +2931,11 @@ function buildChatPrompt(session: AiChatSession, userMessage: string): string {
   return [
     'Sen DropMedia içindeki local AI asistanısın. Türkçe, kısa, net ve pratik cevap ver.',
     'Kullanıcı video/dosya bağladıysa transcript bağlamını kullan; transcript yoksa bunu açıkça söyle.',
+    citationsBlock
+      ? 'Bağlamda [00:01:23] gibi zaman/işaret referansları varsa, ilgili bilgiyi verirken bu [ref] referanslarını cevabında belirt.'
+      : '',
     context ? `Dosya bağlamı:\n${context}` : '',
+    citationsBlock ? `Kaynak referansları:\n${citationsBlock}` : '',
     `Sohbet geçmişi:\n${history}`,
     `Son kullanıcı mesajı:\n${userMessage}`,
     'Cevap:'
@@ -2812,12 +2951,27 @@ function readChatAttachmentContext(inputPath: string): string {
   }
 }
 
-async function runOllamaChat(model: string, prompt: string): Promise<string> {
+interface ChatStreamOptions {
+  sessionId: string
+  onToken: (delta: string) => void
+}
+
+async function runOllamaChat(model: string, prompt: string, streaming?: ChatStreamOptions): Promise<string> {
   const ollamaBin = await detectOllamaCommand()
   if (!ollamaBin) throw new Error('Ollama hazır değil. Önce AI araçlarından Ollama kurulumunu çalıştırın.')
   await ensureOllamaServerQuiet(ollamaBin)
-  const result = await runOllamaRawGenerate(model, prompt, 10 * 60_000)
-  if (!result.trim()) throw new Error('Ollama boş yanıt döndürdü.')
+  const httpKey = streaming ? `chat:${streaming.sessionId}` : undefined
+  const result = await runOllamaRawGenerate(model, prompt, 10 * 60_000, streaming && {
+    onToken: streaming.onToken,
+    onRequest: (req) => {
+      // In-flight chat HTTP isteğini activeHttpJobs'a 'chat:'+sessionId altında kaydet.
+      // stopAiChat bu handle'ı destroy eder; runOllamaRawGenerate kısmi metinle resolve eder.
+      if (httpKey) activeHttpJobs.set(httpKey, req)
+    }
+  })
+  if (httpKey) activeHttpJobs.delete(httpKey)
+  // Streaming modunda kullanıcı durdurduysa kısmi metin geçerli sayılır (boş olabilir).
+  if (!streaming && !result.trim()) throw new Error('Ollama boş yanıt döndürdü.')
   return result.trim()
 }
 
@@ -2827,6 +2981,7 @@ async function ensureOllamaServerQuiet(bin: string): Promise<void> {
   try {
     mkdirSync(localOllamaModels(), { recursive: true })
     const proc = spawn(bin, ['serve'], { env: childEnv(), detached: true, stdio: 'ignore' })
+    if (typeof proc.pid === 'number') spawnedOllamaServePid = proc.pid
     proc.unref()
   } catch (err) {
     throw new Error(`Ollama server başlatılamadı: ${err instanceof Error ? err.message : String(err)}`)
@@ -2839,7 +2994,20 @@ async function ensureOllamaServerQuiet(bin: string): Promise<void> {
   throw new Error('Ollama server zamanında hazır olmadı.')
 }
 
-function runOllamaRawGenerate(model: string, prompt: string, timeoutMs: number): Promise<string> {
+interface OllamaRawGenerateOptions {
+  // Her token (NDJSON parça) için çağrılır; streaming UI bunu kullanır.
+  onToken?: (delta: string) => void
+  // İstek kurulduğunda verilir; çağıran activeHttpJobs'a kaydedip durdurabilir.
+  // Stop edilirse o ana kadar üretilen kısmi metinle resolve edilir (reject etmez).
+  onRequest?: (req: { destroy: (error?: Error) => void }) => void
+}
+
+function runOllamaRawGenerate(
+  model: string,
+  prompt: string,
+  timeoutMs: number,
+  options?: OllamaRawGenerateOptions
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const url = ollamaApiUrl('/api/generate')
     const payload = JSON.stringify({ model, prompt, stream: true, options: { temperature: 0.3, top_p: 0.9 } })
@@ -2847,6 +3015,8 @@ function runOllamaRawGenerate(model: string, prompt: string, timeoutMs: number):
     let output = ''
     let buffer = ''
     let settled = false
+    // Kullanıcı durdurduğunda (stopAiChat) bunu işaretle ki kısmi metni resolve edelim.
+    let stopped = false
     const finish = (fn: () => void) => {
       if (settled) return
       settled = true
@@ -2857,7 +3027,10 @@ function runOllamaRawGenerate(model: string, prompt: string, timeoutMs: number):
       if (!trimmed) return
       const parsed = JSON.parse(trimmed) as Record<string, unknown>
       if (typeof parsed.error === 'string' && parsed.error) throw new Error(parsed.error)
-      if (typeof parsed.response === 'string') output += parsed.response
+      if (typeof parsed.response === 'string' && parsed.response) {
+        output += parsed.response
+        try { options?.onToken?.(parsed.response) } catch { /* onToken hatası üretimi bozmamalı */ }
+      }
     }
     const req = requestImpl({
       protocol: url.protocol,
@@ -2900,7 +3073,22 @@ function runOllamaRawGenerate(model: string, prompt: string, timeoutMs: number):
       })
     })
     req.on('timeout', () => req.destroy(new Error(`OLLAMA_CHAT_TIMEOUT:${timeoutMs}`)))
-    req.on('error', err => finish(() => reject(err)))
+    req.on('error', err => {
+      // Kullanıcı durdurduysa hata fırlatma — o ana kadarki kısmi metni döndür.
+      if (stopped) {
+        finish(() => resolve(output))
+        return
+      }
+      finish(() => reject(err))
+    })
+    // Çağırana durdurulabilir bir handle ver. destroy('__AI_STOPPED__') gelirse
+    // kısmi metinle resolve edilir.
+    options?.onRequest?.({
+      destroy: (error?: Error) => {
+        stopped = true
+        try { req.destroy(error ?? new Error('__AI_STOPPED__')) } catch { /* ignore */ }
+      }
+    })
     req.write(payload)
     req.end()
   })
@@ -3251,8 +3439,17 @@ export function setupAiHandlers(ipcMain: IpcMain): void {
   })
   ipcMain.handle('ai-chat-sessions', () => listChatSessions())
   ipcMain.handle('ai-chat-send', (_e, req: AiChatSendRequest) => sendAiChatMessage(req))
+  ipcMain.handle('ai-chat-stop', (_e, sessionId?: string) => stopAiChat(sessionId))
   ipcMain.handle('ai-chat-delete', (_e, sessionId: string) => deleteChatSession(sessionId))
   ipcMain.handle('ai-chat-clear', () => clearChatSessions())
+
+  // Uygulama kapanırken bu uygulamanın başlattığı detached "ollama serve"
+  // sürecini öldür ki arkada başıboş süreç kalmasın.
+  app.on('before-quit', () => {
+    if (typeof spawnedOllamaServePid !== 'number') return
+    try { process.kill(spawnedOllamaServePid, 'SIGTERM') } catch { /* zaten kapanmış olabilir */ }
+    spawnedOllamaServePid = undefined
+  })
 }
 
 const GET_PIP_DOWNLOAD_SCRIPT = String.raw`
