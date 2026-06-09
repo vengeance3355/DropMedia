@@ -162,7 +162,9 @@ declare global {
       logoutAdmin:          () => Promise<AdminStatus>
       listAdminReleases:    () => Promise<{ data?: AdminRelease[]; count?: number; source?: string }>
       saveAdminRelease:     (payload: Partial<AdminRelease>) => Promise<{ data?: AdminRelease }>
-      publishAdminRelease:  (payload: AdminReleasePublishInput) => Promise<{ ok: boolean; workflow?: string; ref?: string; target?: string }>
+      publishAdminRelease:  (payload: AdminReleasePublishInput) => Promise<{ ok: boolean; workflow?: string; ref?: string; target?: string; workflow_url?: string }>
+      deleteAdminRelease:   (id: number) => Promise<{ ok: boolean }>
+      editAdminRelease:     (id: number, notes: string) => Promise<{ ok: boolean; data?: AdminRelease }>
 
       // Sistem
       selectFolder:       () => Promise<string | null>

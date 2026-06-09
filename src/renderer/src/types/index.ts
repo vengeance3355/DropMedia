@@ -426,26 +426,20 @@ export interface AdminStatus {
 }
 
 export interface AdminRelease {
-  id?: string
+  github_id?: number
   version: string
-  channel?: string
   title?: string
   notes?: string
   github_tag?: string
-  appimage_url?: string
-  deb_url?: string
+  windows_exe_url?: string
+  windows_blockmap_url?: string
   latest_yml_url?: string
-  mandatory?: boolean
-  published?: boolean
+  asset_names?: string[]
   created_at?: string
-  updated_at?: string
+  prerelease?: boolean
 }
 
 export interface AdminReleasePublishInput {
-  bump: 'patch' | 'minor' | 'major'
   version?: string
   notes?: string
-  draft?: boolean
-  prerelease?: boolean
-  ref?: string
 }

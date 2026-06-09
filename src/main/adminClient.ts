@@ -13,7 +13,7 @@ interface AdminSession {
 }
 
 interface RequestOptions {
-  method: 'GET' | 'POST' | 'DELETE'
+  method: 'GET' | 'POST' | 'DELETE' | 'PATCH'
   body?: object
   auth?: boolean
 }
@@ -25,6 +25,8 @@ export function setupAdminClientHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('admin-releases-list', () => adminRequest('/api/releases', { method: 'GET', auth: true }))
   ipcMain.handle('admin-release-save', (_e, payload: object) => adminRequest('/api/releases', { method: 'POST', auth: true, body: payload }))
   ipcMain.handle('admin-release-publish', (_e, payload: object) => adminRequest('/api/releases/publish', { method: 'POST', auth: true, body: payload }))
+  ipcMain.handle('admin-releases-delete', (_e, id: number) => adminRequest(`/api/releases?id=${id}`, { method: 'DELETE', auth: true }))
+  ipcMain.handle('admin-release-edit', (_e, id: number, notes: string) => adminRequest(`/api/releases?id=${id}`, { method: 'PATCH', auth: true, body: { notes } }))
 }
 
 async function getAdminStatus() {
