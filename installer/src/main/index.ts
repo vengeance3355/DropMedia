@@ -246,10 +246,21 @@ function createWindow(): void {
     icon: join(__dirname, '../../resources/icon.png'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false, contextIsolation: true
+      sandbox: false, contextIsolation: true,
+      devTools: true
     }
   })
-  win.on('ready-to-show', () => win?.show())
+  win.on('ready-to-show', () => {
+    win?.show()
+    win?.focus()
+    app.focus({ steal: true })
+  })
+  win.webContents.on('did-fail-load', (_e, code, desc) => {
+    console.error('Renderer yüklenemedi:', code, desc)
+  })
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error('Renderer çöktü:', details)
+  })
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {

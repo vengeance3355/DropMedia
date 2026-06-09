@@ -64,10 +64,10 @@ const asarBin  = path.join(installerRoot, 'node_modules', '.bin', 'asar.cmd')
 console.log('ASAR oluşturuluyor...')
 const asarResult = spawnSync(asarBin, ['pack', tmpAppDir, asarPath], { stdio: 'pipe', encoding: 'utf8', shell: true })
 if (asarResult.status !== 0) {
-  
-  
-  
-  
+  console.error('asar exit:', asarResult.status, 'signal:', asarResult.signal)
+  console.error('stderr:', asarResult.stderr)
+  console.error('stdout:', asarResult.stdout)
+  console.error('error:', asarResult.error)
   process.exit(1)
 }
 console.log('ASAR hazır:', asarPath)
