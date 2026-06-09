@@ -727,9 +727,21 @@ async function ensureOllamaServer(job: AiJob, bin: string): Promise<void> {
 }
 
 function ollamaBaseUrl(): URL {
-  const configured = (process.env.OLLAMA_HOST ?? '127.0.0.1:11434').trim()
-  const value = /^https?:\/\//i.test(configured) ? configured : `http://${configured}`
-  return new URL(value)
+  const fallback = new URL('http://127.0.0.1:11434')
+  const configured = (process.env.OLLAMA_HOST ?? '').trim()
+  if (!configured) return fallback
+  try {
+    const value = /^https?:\/\//i.test(configured) ? configured : `http://${configured}`
+    const url = new URL(value)
+    const host = url.hostname.toLowerCase()
+    const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0.0.0.0'
+    // Güvenlik: yalnızca loopback'e izin ver — uzak OLLAMA_HOST'a prompt/veri sızdırmayı
+    // engelle. Uzak host yalnızca açık opt-in (ai.allowRemoteOllama) ile kullanılabilir.
+    if (isLoopback || store.get('ai.allowRemoteOllama') === true) return url
+    return fallback
+  } catch {
+    return fallback
+  }
 }
 
 function ollamaApiUrl(pathname: string): URL {
