@@ -147,9 +147,12 @@ function resolveNotes(opts, current, next) {
     return fs.readFileSync(f, 'utf8').trim()
   }
   if (opts.notes) return opts.notes.trim()
-  const prev = capture('git', ['describe', '--tags', '--abbrev=0', '--match=v*'], { allowFail: true })
-  const range = prev ? `${prev}..HEAD` : ''
-  const log = capture('git', ['log', '--pretty=format:- %s', range].filter(Boolean), { allowFail: true })
+  // Notlar boşsa: son release'ten (stable tag) bu yana ki commit'ler.
+  // 'stable' tag'i bu noktada henüz taşınmadığından önceki sürümü işaret eder.
+  // (v* tag'leri kullanılmıyor — tek 'stable' tag mimarisi.)
+  const hasStable = capture('git', ['tag', '-l', 'stable'], { allowFail: true })
+  const range = hasStable ? 'stable..HEAD' : ''
+  const log = capture('git', ['log', '--no-merges', '--pretty=format:- %s', range].filter(Boolean), { allowFail: true })
   return log || `- ${next} sürümüne güncellendi`
 }
 
