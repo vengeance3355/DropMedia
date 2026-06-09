@@ -69,8 +69,6 @@ interface HealthResponse {
 }
 
 const COLORS = ['#7c3aed','#3b82f6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6']
-const LOCAL_BRIDGES = ['http://127.0.0.1:17389', 'http://localhost:17389']
-type BridgeState = 'checking' | 'connected' | 'unavailable'
 
 function emptyStats(): StatsData {
   return { total: 0, totalMb: 0, avgSpeedMbps: 0, platforms: {}, devices: [], recent: [] }
@@ -89,14 +87,6 @@ async function fetchJson<T>(url: string, timeoutMs?: number): Promise<T | null> 
   } finally {
     if (timer) window.clearTimeout(timer)
   }
-}
-
-async function fetchLocalJson<T>(path: string): Promise<T | null> {
-  for (const bridge of LOCAL_BRIDGES) {
-    const result = await fetchJson<T>(`${bridge}${path}`, 900)
-    if (result) return result
-  }
-  return null
 }
 
 function mergeStats(remote: StatsData | null, local: StatsData | null): StatsData {
@@ -172,7 +162,6 @@ export function DashboardClient() {
   const [expandedLog, setExpandedLog]       = useState<string | null>(null)
   const [logPage, setLogPage]     = useState(1)
   const [loading, setLoading]     = useState(true)
-  const [bridgeState, setBridgeState] = useState<BridgeState>('checking')
   const [logSearch, setLogSearch] = useState('')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deletingAll, setDeletingAll] = useState(false)
@@ -184,16 +173,13 @@ export function DashboardClient() {
     const logsPath = `/api/logs?page=${logPage}${deviceQuery}`
 
     try {
-      const [remoteStats, remoteLogs, localStats, localLogs, healthRows] = await Promise.all([
+      const [remoteStats, remoteLogs, healthRows] = await Promise.all([
         fetchJson<StatsData>(statsPath),
         fetchJson<LogsResponse>(logsPath),
-        fetchLocalJson<StatsData>(statsPath),
-        fetchLocalJson<LogsResponse>(logsPath),
         fetchJson<HealthResponse>('/api/health')
       ])
-      setBridgeState(localStats || localLogs ? 'connected' : 'unavailable')
-      const mergedStats = mergeStats(remoteStats, localStats)
-      const mergedLogs = mergeLogs(remoteLogs, localLogs)
+      const mergedStats = mergeStats(remoteStats, null)
+      const mergedLogs = mergeLogs(remoteLogs, null)
       setStats(mergedStats)
       setLogs(mergedLogs.data ?? [])
       setLogCount(mergedLogs.count ?? 0)
@@ -262,9 +248,6 @@ export function DashboardClient() {
           <span className="font-bold text-white">DropMedia Admin</span>
         </div>
         <div className="flex items-center gap-4">
-          <span className={`text-xs ${bridgeState === 'connected' ? 'text-green-400' : bridgeState === 'checking' ? 'text-white/30' : 'text-amber-400'}`}>
-            {bridgeState === 'connected' ? 'Yerel uygulama bağlı' : bridgeState === 'checking' ? 'Bağlantı kontrol ediliyor' : 'Yerel uygulama bağlı değil'}
-          </span>
           <button onClick={fetchData} className="text-white/40 hover:text-white transition-colors text-sm">↻ Yenile</button>
           <button onClick={handleLogout} className="text-white/40 hover:text-red-400 transition-colors text-sm">Çıkış</button>
         </div>
@@ -310,12 +293,6 @@ export function DashboardClient() {
             ))}
           </div>
 
-          {!loading && bridgeState === 'unavailable' && (
-            <div className="mb-4 rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-amber-200/90 text-sm">
-              Admin panel açık DropMedia uygulamasına bağlanamadı. Uygulama açık değilse açın; Vercel sayfası eski deploy ise admin paneli yeniden deploy edin.
-            </div>
-          )}
-
           {loading ? (
             <div className="flex items-center justify-center h-64 text-white/30">Yükleniyor…</div>
           ) : tab === 'overview' ? (
@@ -323,7 +300,7 @@ export function DashboardClient() {
           ) : tab === 'logs' ? (
             <LogsTab
               logs={logs} logCount={logCount} logPage={logPage} setLogPage={setLogPage}
-              expandedLog={expandedLog} setExpandedLog={setExpandedLog} bridgeState={bridgeState}
+              expandedLog={expandedLog} setExpandedLog={setExpandedLog}
               search={logSearch} setSearch={setLogSearch}
               deletingId={deletingId} deletingAll={deletingAll}
               onDeleteLog={handleDeleteLog} onDeleteAll={handleDeleteAll}
@@ -425,12 +402,11 @@ function CopyBtn({ text, small }: { text: string; small?: boolean }) {
   )
 }
 
-function LogsTab({ logs, logCount, logPage, setLogPage, expandedLog, setExpandedLog, bridgeState,
+function LogsTab({ logs, logCount, logPage, setLogPage, expandedLog, setExpandedLog,
   search, setSearch, deletingId, deletingAll, onDeleteLog, onDeleteAll, onSaveLogs
 }: {
   logs: LogItem[]; logCount: number; logPage: number; setLogPage: (p: number) => void
   expandedLog: string | null; setExpandedLog: (id: string | null) => void
-  bridgeState: BridgeState
   search: string; setSearch: (s: string) => void
   deletingId: string | null; deletingAll: boolean
   onDeleteLog: (id: string) => void
@@ -500,11 +476,7 @@ function LogsTab({ logs, logCount, logPage, setLogPage, expandedLog, setExpanded
       )}
 
       {filtered.length === 0 && (
-        <EmptyState message={
-          search ? `"${search}" için sonuç bulunamadı` :
-          bridgeState === 'unavailable' ? 'Yerel uygulama bağlı değil; log alınamadı' :
-          'Henüz log yok'
-        } />
+        <EmptyState message={search ? `"${search}" için sonuç bulunamadı` : 'Henüz log yok'} />
       )}
 
       {filtered.map(log => (
