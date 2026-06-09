@@ -180,7 +180,7 @@ export function ProductHub({
   const [aiChatSessions, setAiChatSessions] = useState<AiChatSession[]>([])
   const [selectedAiChatId, setSelectedAiChatId] = useState('')
   const [aiChatInput, setAiChatInput] = useState('')
-  const [aiChatModel, setAiChatModel] = useState('qwen3.5:9b')
+  const [aiChatModel, setAiChatModel] = useState('qwen2.5:7b')
   const [selectedChatItemId, setSelectedChatItemId] = useState('')
   const [activeAiChatPendingIds, setActiveAiChatPendingIds] = useState<Set<string>>(() => new Set())
   const [busy, setBusy] = useState<Record<string, boolean>>({})
@@ -663,7 +663,7 @@ export function ProductHub({
   async function sendAiChat() {
     const message = aiChatInput.trim()
     if (!message || selectedAiChatBusy) return
-    const model = aiChatModel || aiChatModels[0]?.id || 'qwen3.5:9b'
+    const model = aiChatModel || aiChatModels[0]?.id || 'qwen2.5:7b'
     const requestSessionId = selectedAiChat?.id
     const optimisticId = requestSessionId ?? `draft-chat-${Date.now()}`
     const now = Date.now()

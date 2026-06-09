@@ -268,21 +268,21 @@ const toolLabels: Record<AiToolId, string> = {
 
 const ollamaRecommendedModels: AiChatModel[] = [
   {
-    id: 'qwen3.5:9b',
-    label: 'Qwen 3.5 9B - önerilen',
+    id: 'qwen2.5:7b',
+    label: 'Qwen 2.5 7B - önerilen',
     installed: false,
     recommended: true,
-    sizeHint: '6.6 GB',
-    weightGb: 6.6,
+    sizeHint: '4.7 GB',
+    weightGb: 4.7,
     description: 'Genel sohbet, özet, başlık ve Türkçe kullanım için ana kalite/hız dengesi.'
   },
   {
-    id: 'qwen3.5:4b',
-    label: 'Qwen 3.5 4B - hızlı',
+    id: 'qwen2.5:3b',
+    label: 'Qwen 2.5 3B - hızlı',
     installed: false,
     recommended: true,
-    sizeHint: '3.4 GB',
-    weightGb: 3.4,
+    sizeHint: '1.9 GB',
+    weightGb: 1.9,
     description: 'Daha zayıf cihazlarda hızlı yanıt ve düşük bellek kullanımı.'
   },
   {
@@ -2042,7 +2042,13 @@ async function diagnoseOllamaTool(): Promise<AiToolStatus> {
     await ensureOllamaServerQuiet(ollamaBin).catch(() => {})
     models = await runSimple(ollamaBin, ['list'], undefined, 12_000)
   }
-  const modelReady = !!models && models.code === 0 && hasOllamaModel(models.stdout, ollamaModel)
+  // Herhangi bir katalog modeli kuruluysa "hazır" say — tek sabit tag'e bağlama.
+  let readyModel: AiChatModel | undefined
+  if (models && models.code === 0) {
+    const out = models.stdout
+    readyModel = ollamaRecommendedModels.find(m => hasOllamaModel(out, m.id))
+  }
+  const modelReady = !!readyModel
   const runtimeMissingDetail = isOllamaManagedInstallSupported()
     ? 'Ollama runtime bulunamadı'
     : ollamaManagedInstallUnsupportedMessage()
@@ -2054,8 +2060,8 @@ async function diagnoseOllamaTool(): Promise<AiToolStatus> {
       : models?.code !== 0
         ? 'Ollama çalışıyor ama model listesi okunamadı'
         : modelReady
-          ? `${ollamaModel} modeli hazır`
-          : `${ollamaModel} modeli eksik`,
+          ? `${readyModel!.id} modeli hazır`
+          : 'Model eksik — Local AI Araçları\'ndan bir model kurun',
     version: lastUsefulLine(version?.stdout ?? '') || lastUsefulLine(version?.stderr ?? '')
   }
 }
@@ -2434,8 +2440,8 @@ function preferredOllamaModelId(): string {
     .map(model => recommendOllamaModel(model, specs, false))
     .filter(model => model.recommendation !== 'Ağır kalabilir')
   return recommended.find(model => model.id === ollamaModel)?.id ??
-    recommended.find(model => model.id === 'qwen3.5:4b')?.id ??
-    'qwen3.5:4b'
+    recommended.find(model => model.id === 'qwen2.5:3b')?.id ??
+    'qwen2.5:3b'
 }
 
 async function ensureOllamaRuntime(job: AiJob): Promise<string> {
