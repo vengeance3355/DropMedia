@@ -1,4 +1,4 @@
 {
-  "version": "1.0.1",
-  "notes": "- Windows uyumluluğu iyileştirildi\n- Sürüm yönetimi düzeltildi\n- Release otomasyonu eklendi"
+  "version": "1.0.2",
+  "notes": "- Admin panel release ak��� test\n- NSIS bootstrapper installer\n- Kur/G�ncelle/Onar/Kald�r"
 }

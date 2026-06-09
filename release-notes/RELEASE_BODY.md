@@ -13,3 +13,10 @@ Ana sürüm
 - Windows uyumluluğu iyileştirildi
 - Sürüm yönetimi düzeltildi
 - Release otomasyonu eklendi
+
+---
+
+# 1.0.2
+- Admin panel release ak��� test
+- NSIS bootstrapper installer
+- Kur/G�ncelle/Onar/Kald�r

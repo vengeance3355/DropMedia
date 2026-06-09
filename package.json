@@ -1,6 +1,6 @@
 {
   "name": "drop-media",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Çoklu platform video indirme aracı",
   "main": "out/main/index.js",
   "author": "DropMedia",
@@ -54,7 +54,9 @@
       "package.json"
     ],
     "win": {
-      "target": ["dir"],
+      "target": [
+        "dir"
+      ],
       "icon": "resources/icon.ico"
     }
   }
