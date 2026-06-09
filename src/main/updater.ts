@@ -47,8 +47,9 @@ function httpsGetJson(url: string): Promise<unknown> {
 
 async function fetchLatestRelease(): Promise<ReleaseInfo | null> {
   try {
-    // tag 'stable' sabit olduğundan sürüm karşılaştırması version.json'dan yapılır
-    const verData = await httpsGetJson(VERSION_URL) as Record<string, unknown>
+    // tag 'stable' sabit olduğundan sürüm karşılaştırması version.json'dan yapılır.
+    // cache-bust şart: CDN bayat version.json verirse banner hiç çıkmıyor.
+    const verData = await httpsGetJson(`${VERSION_URL}?nc=${Date.now()}`) as Record<string, unknown>
     const latestVersion = String(verData.version || '')
     if (!latestVersion) return null
 
