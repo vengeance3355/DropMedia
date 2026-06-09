@@ -2712,24 +2712,19 @@ async function sendAiChatMessage(req: AiChatSendRequest): Promise<AiChatSendResu
   session.messages = [...session.messages, userMessage]
   saveChatSession(session)
 
-  const actionKind = detectChatAction(messageText)
-  if (actionKind) {
-    if (!session.attachmentPath || !existsSync(session.attachmentPath)) throw new Error('Bu komut için tamamlanmış local dosya seçin.')
-    if (!chatSessionExists(session.id)) return { removed: true }
-    const action = startAi({ kind: actionKind, inputPath: session.attachmentPath, title: session.attachmentTitle || basename(session.attachmentPath) })
-    const assistant = chatAssistantMessage(`${aiActionText(actionKind)} başlatıldı. İlerlemeyi AI job geçmişinden takip edebilirsin.`, model)
-    if (!chatSessionExists(session.id)) return { removed: true }
-    session.messages = [...session.messages, assistant]
-    saveChatSession(session)
-    return { session, assistant, action: { kind: actionKind, jobId: action.jobId } }
-  }
-
+  // Serbest sohbet HER ZAMAN cevap verir — anahtar kelimeyle ("özet/başlık/çevir")
+  // job kaçırma + dosya yoksa throw etme davranışı kaldırıldı. Transcript/özet/çeviri
+  // gibi işler artık açık butonlarla / video bağlamı (RAG) ile yapılır.
   const response = await runOllamaChat(model, buildChatPrompt(session, messageText))
   const assistant = chatAssistantMessage(response, model)
-  if (!chatSessionExists(session.id)) return { removed: true }
-  session.messages = [...session.messages, assistant]
-  saveChatSession(session)
-  return { session, assistant }
+  // History race fix: 10dk'ya kadar await sonrası `session` bayatlamış olabilir;
+  // store'dan id ile TAZE oku, asistan mesajını ona ekle (eşzamanlı mesajları ezme).
+  const fresh = listChatSessions().find(item => item.id === session.id)
+  if (!fresh) return { removed: true }
+  fresh.messages = [...fresh.messages, assistant]
+  fresh.updatedAt = Date.now()
+  saveChatSession(fresh)
+  return { session: fresh, assistant }
 }
 
 function chatAssistantMessage(content: string, model: string): AiChatMessage {
