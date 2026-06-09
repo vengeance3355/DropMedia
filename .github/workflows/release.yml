@@ -76,8 +76,9 @@ jobs:
           ARGS=("$TARGET" "--allow-dirty")
 
           if [ -n "$RELEASE_NOTES" ]; then
-            node -e "require('fs').writeFileSync('/tmp/rn.md', process.env.RELEASE_NOTES, 'utf8')"
-            ARGS+=("--notes-file" "/tmp/rn.md")
+            RN_FILE="${RUNNER_TEMP:-/tmp}/rn.md"
+            node -e "require('fs').writeFileSync(process.argv[1], process.env.RELEASE_NOTES, 'utf8')" "$RN_FILE"
+            ARGS+=("--notes-file" "$RN_FILE")
           fi
 
           [ "${{ inputs.draft }}"      = "true" ] && ARGS+=("--draft")
