@@ -130,3 +130,8 @@ Ana sürüm
 
 # 1.0.10
 - Uygulama içi güncelleme bildirimi bazen hiç görünmüyordu, düzeltildi
+
+---
+
+# 1.0.11
+- Hesap oturumu artık otomatik yenileniyor (saatte bir "tekrar giriş yapın" sorunu giderildi)

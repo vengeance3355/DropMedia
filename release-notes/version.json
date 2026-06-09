@@ -1,4 +1,4 @@
 {
-  "version": "1.0.10",
-  "notes": "- Uygulama içi güncelleme bildirimi bazen hiç görünmüyordu, düzeltildi"
+  "version": "1.0.11",
+  "notes": "- Hesap oturumu artık otomatik yenileniyor (saatte bir \"tekrar giriş yapın\" sorunu giderildi)"
 }
