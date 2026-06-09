@@ -26,9 +26,11 @@ function Logo({ spinning = false }: { spinning?: boolean }) {
         </svg>
       </div>
       {spinning && (
-        <div className="absolute -inset-[14px] pointer-events-none">
-          <svg className="w-full h-full animate-spin-slow" viewBox="0 0 80 80">
-            <circle cx="40" cy="40" r="36" fill="none" stroke="url(#rg)" strokeWidth="2.5" strokeDasharray="60 165" strokeLinecap="round"/>
+        <div className="absolute -inset-4 pointer-events-none">
+          <svg className="w-full h-full animate-spin-slow" viewBox="0 0 96 96">
+            {/* tam soluk iz: dönen arc'ın "havada uçan çizgi" gibi görünmesini engeller */}
+            <circle cx="48" cy="48" r="46" fill="none" stroke="white" strokeOpacity="0.08" strokeWidth="2"/>
+            <circle cx="48" cy="48" r="46" fill="none" stroke="url(#rg)" strokeWidth="2.5" strokeDasharray="72 217" strokeLinecap="round"/>
             <defs>
               <linearGradient id="rg" x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" stopColor="#7c3aed"/>
