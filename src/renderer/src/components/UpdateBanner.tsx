@@ -28,7 +28,7 @@ export function UpdateBanner() {
         </div>
         <div className="ml-3 flex shrink-0 items-center gap-2">
           <button
-            onClick={() => window.api.downloadUpdate()}
+            onClick={() => window.api.installUpdate()}
             className="px-3 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-medium transition-all"
           >
             Güncelle
@@ -40,38 +40,6 @@ export function UpdateBanner() {
             Bu Sürümle Devam Et
           </button>
         </div>
-      </Banner>
-    )
-  }
-
-  if (status.type === 'downloading') {
-    const pct = Math.round(status.progress?.percent ?? 0)
-    return (
-      <Banner color="blue">
-        <span className="text-white/80 text-xs">Güncelleme indiriliyor…</span>
-        <div className="ml-3 flex items-center gap-2">
-          <div className="w-24 h-1 rounded-full bg-white/20 overflow-hidden">
-            <div
-              className="h-full bg-white/70 rounded-full transition-all duration-300"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <span className="text-white/50 text-xs">{pct}%</span>
-        </div>
-      </Banner>
-    )
-  }
-
-  if (status.type === 'downloaded') {
-    return (
-      <Banner color="green" onDismiss={() => setDismissed(true)}>
-        <span className="text-white/80 text-xs">Güncelleme indirildi — kurmak için onay bekliyor</span>
-        <button
-          onClick={() => window.api.installUpdate()}
-          className="ml-3 px-3 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-medium transition-all"
-        >
-          Kur ve Yeniden Başlat
-        </button>
       </Banner>
     )
   }

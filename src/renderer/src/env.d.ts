@@ -182,7 +182,6 @@ declare global {
 
       // Güncelleme
       checkForUpdates: () => Promise<void>
-      downloadUpdate:  () => Promise<void>
       installUpdate:   () => Promise<void>
       onUpdateStatus:  (cb: (data: object) => void) => void
 

@@ -10,7 +10,7 @@
 
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, createWriteStream } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, createWriteStream, copyFileSync } from 'fs'
 import { get as httpsGet } from 'https'
 import { spawn } from 'child_process'
 import { tmpdir } from 'os'
@@ -212,6 +212,16 @@ async function performInstall(
   onProgress(96, 'Kısayollar oluşturuluyor...')
   await createShortcuts(dir)
 
+  // Installer'ı kurulum dizinine kopyala: uygulama içi "Güncelle" bunu açacak.
+  onProgress(98, 'Güncelleyici yerleştiriliyor...')
+  try {
+    const selfExe = process.execPath
+    const destExe = join(dir, 'DropMedia-Installer.exe')
+    if (app.isPackaged && selfExe.toLowerCase() !== destExe.toLowerCase()) {
+      copyFileSync(selfExe, destExe)
+    }
+  } catch { /* kritik değil */ }
+
   onProgress(100, 'Tamamlandı.')
   return { version }
 }
@@ -281,9 +291,10 @@ function send(ch: string, data: unknown): void {
 app.whenReady().then(async () => {
   createWindow()
 
-  // ── Silent / update modu (UI yok) ─────────────────────────────────────────
-  if (IS_SILENT || IS_UPDATE) {
-    if (IS_UPDATE) await killDropMedia()
+  // ── Silent modu (UI yok, sadece CI/test) ──────────────────────────────────
+  // --update artık UI gösterir + otomatik başlar (aşağıdaki autoStart); böylece
+  // kullanıcı "Güncelle"ye basınca installer açılır ve ilerlemeyi görür.
+  if (IS_SILENT) {
     try {
       const { version } = await performInstall(activeDir, (pct, status) => {
         process.stdout.write(`\r[${String(pct).padStart(3)}%] ${status}                 `)
@@ -315,7 +326,8 @@ app.whenReady().then(async () => {
       latestVersion && installedVersion !== latestVersion       ? 'update'   :
                                                                   'uptodate'
 
-    return { mode, installedVersion, latestVersion, installDir: activeDir, notes }
+    // autoStart: app içinden --update ile açıldıysa renderer güncellemeyi otomatik başlatır
+    return { mode, installedVersion, latestVersion, installDir: activeDir, notes, autoStart: IS_UPDATE }
   })
 
   ipcMain.handle('installer-select-dir', async () => {

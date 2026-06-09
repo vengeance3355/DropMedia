@@ -189,9 +189,8 @@ const api = {
   getAppVersion:      () => ipcRenderer.invoke('app-version'),
   logClientError:     (payload: object) => ipcRenderer.invoke('client-error-log', payload),
 
-  // Güncelleme
+  // Güncelleme — app indirmez, kurulum dizinindeki installer'ı açar
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
-  downloadUpdate:  () => ipcRenderer.invoke('download-update'),
   installUpdate:   () => ipcRenderer.invoke('install-update'),
   onUpdateStatus:  (cb: (d: object) => void) => ipcRenderer.on('update-status', (_e, d) => cb(d)),
 
