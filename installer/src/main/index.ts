@@ -169,12 +169,12 @@ async function performInstall(
 
   // Versiyon bilgisi
   onProgress(0, 'Sürüm bilgisi alınıyor...')
-  const verData = await httpsGetJson(VERSION_URL) as Record<string, string>
+  const verData = await httpsGetJson(`${VERSION_URL}?nc=${Date.now()}`) as Record<string, string>
   const version = verData.version || '0.0.0'
 
   // İndir
   onProgress(2, `DropMedia v${version} indiriliyor...`)
-  await downloadFile(ZIP_URL, zipPath, (pct, mb, total) => {
+  await downloadFile(`${ZIP_URL}?nc=${Date.now()}`, zipPath, (pct, mb, total) => {
     onProgress(
       Math.round(2 + pct * 0.73),
       `İndiriliyor... ${mb.toFixed(1)} / ${total.toFixed(1)} MB`
@@ -316,7 +316,7 @@ app.whenReady().then(async () => {
     let latestVersion: string | null = null
     let notes = ''
     try {
-      const vd = await httpsGetJson(VERSION_URL) as Record<string, string>
+      const vd = await httpsGetJson(`${VERSION_URL}?nc=${Date.now()}`) as Record<string, string>
       latestVersion = vd.version || null
       notes = vd.notes || ''
     } catch {}

@@ -6,15 +6,16 @@
  */
 
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { existsSync } from 'fs'
+import { existsSync, createWriteStream, mkdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { get as httpsGet } from 'https'
 import { spawn } from 'child_process'
 import { is } from '@electron-toolkit/utils'
 import { logError } from './logger'
 
 const VERSION_URL = 'https://github.com/vengeance3355/DropMedia/releases/download/stable/version.json'
+const INSTALLER_URL = 'https://github.com/vengeance3355/DropMedia/releases/download/stable/DropMedia-Installer.exe'
 
 interface ReleaseInfo {
   version: string
@@ -60,6 +61,24 @@ async function fetchLatestRelease(): Promise<ReleaseInfo | null> {
   }
 }
 
+function downloadFile(url: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const follow = (u: string) => {
+      const file = createWriteStream(dest)
+      httpsGet(u, { headers: { 'User-Agent': 'DropMedia/1.0' } }, (res) => {
+        if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+          file.close(); follow(res.headers.location); return
+        }
+        if (res.statusCode !== 200) { file.close(); reject(new Error(`HTTP ${res.statusCode}`)); return }
+        res.pipe(file)
+        file.on('finish', () => file.close(() => resolve()))
+        file.on('error', reject)
+      }).on('error', reject)
+    }
+    follow(url)
+  })
+}
+
 export function setupUpdater(window: BrowserWindow): void {
   const send = (data: object) => {
     if (!window.isDestroyed()) window.webContents.send('update-status', data)
@@ -81,20 +100,25 @@ export function setupUpdater(window: BrowserWindow): void {
 
   // "Güncelle": uygulama hiçbir şey indirmez. Kurulum dizinindeki installer'ı açar.
   // Installer (DropMedia-Installer.exe) kurulum sırasında kendini buraya kopyalar.
-  ipcMain.handle('install-update', () => {
+  ipcMain.handle('install-update', async () => {
     const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local')
     const installDir   = join(localAppData, 'DropMedia')
-    const installerExe = join(installDir, 'DropMedia-Installer.exe')
+    let   installerExe = join(installDir, 'DropMedia-Installer.exe')
 
+    // Installer kurulum dizininde yoksa stable'dan indir (cache-bust) ve temp'ten çalıştır.
     if (!existsSync(installerExe)) {
-      send({ type: 'error', error: 'Güncelleyici bulunamadı. Lütfen en son DropMedia-Installer.exe ile bir kez güncelleyin.' })
-      void logError({
-        errorType: 'update',
-        errorMessage: 'Kurulum dizininde DropMedia-Installer.exe yok.',
-        operation: 'install-update',
-        details: { installerExe }
-      })
-      return
+      try {
+        const tmp = join(tmpdir(), 'dropmedia-update')
+        mkdirSync(tmp, { recursive: true })
+        const dl = join(tmp, 'DropMedia-Installer.exe')
+        await downloadFile(`${INSTALLER_URL}?nc=${Date.now()}`, dl)
+        installerExe = dl
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        send({ type: 'error', error: 'Güncelleyici indirilemedi: ' + msg })
+        void logError({ errorType: 'update', errorMessage: 'Installer indirilemedi: ' + msg, operation: 'install-update-download' })
+        return
+      }
     }
 
     // Installer DropMedia'yı kapatır, GitHub'dan en son sürümü indirir, kurar, yeniden başlatır.
