@@ -63,6 +63,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_NOTES: ${{ inputs.notes }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: 1
         run: |
           set -euo pipefail
 
@@ -72,7 +74,7 @@ jobs:
           ARGS=("$TARGET" "--allow-dirty")
 
           if [ -n "$RELEASE_NOTES" ]; then
-            printf '%s\n' "$RELEASE_NOTES" > /tmp/rn.md
+            printf '%s' "$RELEASE_NOTES" | iconv -f utf-8 -t utf-8 > /tmp/rn.md 2>/dev/null || printf '%s' "$RELEASE_NOTES" > /tmp/rn.md
             ARGS+=("--notes-file" "/tmp/rn.md")
           fi
 
