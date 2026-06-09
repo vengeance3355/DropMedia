@@ -12,7 +12,6 @@ const REQUIRED_TABLES = [
   'download_library',
   'watch_sources',
   'watch_items',
-  'app_releases',
   'admin_users'
 ]
 const ROOT = process.cwd()

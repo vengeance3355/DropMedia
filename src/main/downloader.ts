@@ -121,6 +121,16 @@ function isAuthenticationRequiredError(text: string): boolean {
     text.includes('authentication')
 }
 
+// Tarayıcı cookie'si OKUNAMADI (örn. Chrome'un yeni şifrelemesi: "Failed to
+// decrypt with DPAPI", yt-dlp #10927). Bu, "giriş gerekli" değildir — cookiesiz
+// tekrar denemek doğru harekettir.
+function isCookieExtractionError(text: string): boolean {
+  return text.includes('failed to decrypt') ||
+    text.includes('dpapi') ||
+    (text.includes('could not copy') && text.includes('cookie')) ||
+    (text.includes('cookie') && text.includes('database'))
+}
+
 export function buildAccessArgs(url: string, opts: { useTor?: boolean; cookieBrowser?: string } = {}): string[] {
   const args: string[] = []
   const useTor = opts.useTor ?? !!(store.get('torEnabled') as boolean | undefined)
@@ -206,7 +216,8 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
       const isFormatOrCookieError = lower.includes('no video formats')
         || lower.includes('requested format is not available')
         || lower.includes('cookies')
-      if (isFormatOrCookieError && !isAuthenticationRequiredError(lower)) {
+        || isCookieExtractionError(lower)
+      if (isFormatOrCookieError && (!isAuthenticationRequiredError(lower) || isCookieExtractionError(lower))) {
         const noCookieArgs = [...baseArgs, ...buildAccessArgs(url, { cookieBrowser: '' }), url]
         const retry = await runProcess(bin, noCookieArgs)
         if (retry.code === 0) {
@@ -451,7 +462,8 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
     // Cookie'li indirme format hatası verirse cookiesiz yeniden dene
     if (!success && mode !== 'retry-no-cookies' && args.includes('--cookies-from-browser')) {
       const lower = (stderr + stdoutTail).toLowerCase()
-      if (!isAuthenticationRequiredError(lower) && (lower.includes('no video formats') || lower.includes('requested format is not available'))) {
+      if ((!isAuthenticationRequiredError(lower) || isCookieExtractionError(lower)) &&
+          (lower.includes('no video formats') || lower.includes('requested format is not available') || isCookieExtractionError(lower))) {
         dbg(`FORMAT_ERROR_WITH_COOKIES — retrying without cookies`)
         // Yeniden denemeden önce bekleyen iptal/duraklatı onurlandır — aynı id'yi
         // kullandığımız için iptal yeni sürece sızıp görünmez şekilde devam etmesin.

@@ -9,7 +9,7 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? ''
 const AUTH_REDIRECT_URL = process.env.SUPABASE_AUTH_REDIRECT_URL
   ?? 'https://admin-panel-xi-orpin.vercel.app/auth/callback'
 const SESSION_KEY = 'sync.session'
-const REQUIRED_TABLES = ['user_settings', 'download_library', 'watch_sources', 'watch_items', 'app_releases']
+const REQUIRED_TABLES = ['user_settings', 'download_library', 'watch_sources', 'watch_items']
 const HEALTH_CACHE_MS = 60_000
 let healthCache: { checkedAt: number; health: SyncHealth } | null = null
 
