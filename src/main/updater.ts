@@ -5,7 +5,7 @@
  */
 
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { createWriteStream, existsSync, mkdirSync } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { get as httpsGet } from 'https'
@@ -102,6 +102,7 @@ export function setupUpdater(window: BrowserWindow): void {
   }
 
   let pendingZipPath: string | null = null
+  let pendingVersion: string | null = null
 
   ipcMain.handle('check-for-updates', async () => {
     send({ type: 'checking' })
@@ -134,6 +135,7 @@ export function setupUpdater(window: BrowserWindow): void {
       })
 
       pendingZipPath = zipPath
+      pendingVersion = info.version
       send({ type: 'downloaded', info: { version: `Hazır - v${info.version}` } })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -149,27 +151,44 @@ export function setupUpdater(window: BrowserWindow): void {
     }
 
     const localAppData = process.env.LOCALAPPDATA || join(require('os').homedir(), 'AppData', 'Local')
-    const installerExe = join(localAppData, 'DropMedia', 'DropMedia-Installer.exe')
     const installDir   = join(localAppData, 'DropMedia')
+    const exePath      = join(installDir, 'DropMedia.exe')
+    const esc          = (s: string) => s.replace(/'/g, "''")
 
-    if (existsSync(installerExe)) {
-      // Installer kuruluysa, ona bırak (tek indirme: zip zaten var)
-      spawn(installerExe, ['--update', `--local-zip=${pendingZipPath}`, `--install-path=${installDir}`], {
-        detached: true,
-        stdio: 'ignore'
-      }).unref()
-    } else {
-      // Installer kurulu değil, PowerShell ile direkt extract et
-      const { spawnSync } = require('child_process')
-      spawnSync('taskkill', ['/F', '/IM', 'DropMedia.exe'], { stdio: 'pipe' })
-      spawnSync('powershell.exe', [
-        '-NoProfile', '-NonInteractive', '-Command',
-        `Expand-Archive -LiteralPath '${pendingZipPath}' -DestinationPath '${installDir}' -Force`
-      ], { stdio: 'pipe' })
-      // Yeniden başlat
-      const exe = join(installDir, 'DropMedia.exe')
-      if (existsSync(exe)) spawn(exe, [], { detached: true, stdio: 'ignore' }).unref()
+    // Güncellemeyi BAĞIMSIZ bir PowerShell süreci uygular: bu uygulama tamamen
+    // kapanana kadar bekler, zip'i üzerine açar, version.json'u (BOM'suz) yazar,
+    // sonra yeniden başlatır. Çalışan exe'yi kendi içinden silemeyiz; bu yüzden
+    // iş, ölecek olan process'ten ayrı bir süreçte yapılır.
+    const ps = [
+      '$ErrorActionPreference = "SilentlyContinue"',
+      `$waitPid = ${process.pid}`,
+      `$zip = '${esc(pendingZipPath)}'`,
+      `$dir = '${esc(installDir)}'`,
+      `$exe = '${esc(exePath)}'`,
+      `$ver = '${esc(pendingVersion || '')}'`,
+      'for ($i = 0; $i -lt 150; $i++) {',
+      '  if (-not (Get-Process -Id $waitPid -ErrorAction SilentlyContinue)) { break }',
+      '  Start-Sleep -Milliseconds 200',
+      '}',
+      'Get-Process DropMedia -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue',
+      'Start-Sleep -Milliseconds 600',
+      'Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force',
+      'if ($ver) { [IO.File]::WriteAllText((Join-Path $dir "version.json"), "{""version"":""$ver""}") }',
+      'Start-Process -FilePath $exe'
+    ].join('\r\n')
+
+    const scriptPath = join(tmpdir(), 'dropmedia-update', 'apply-update.ps1')
+    try {
+      mkdirSync(join(tmpdir(), 'dropmedia-update'), { recursive: true })
+      writeFileSync(scriptPath, ps, 'utf8')
+    } catch (err) {
+      send({ type: 'error', error: `Güncelleme betiği yazılamadı: ${String(err)}` })
+      return
     }
+
+    spawn('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', scriptPath
+    ], { detached: true, stdio: 'ignore' }).unref()
 
     app.quit()
   })
