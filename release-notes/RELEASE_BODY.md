@@ -17,6 +17,13 @@ Ana sürüm
 ---
 
 # 1.0.2
-- Admin panel release ak��� test
+- Admin panel release akışı test
 - NSIS bootstrapper installer
-- Kur/G�ncelle/Onar/Kald�r
+- Kur/Güncelle/Onar/Kaldır
+
+---
+
+# 1.0.3
+- Uygulama içi sürüm yönetimi
+- Admin panel GitHub API entegrasyonu
+- Installer güncelleyici iyileştirildi
