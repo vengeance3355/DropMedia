@@ -357,10 +357,8 @@ function OpenActionButton({ path, action, title, className, children }: {
     if (!path || opening) return
     setOpening(true)
     try {
-      const result = action === 'file'
-        ? await window.api.openFile(path)
-        : await window.api.showInFolder(path)
-      warnOpenResult(result, action === 'file' ? 'open file' : 'show in folder')
+      if (action === 'file') await window.api.openFileInPlayer(path)
+      else await window.api.showItemInFolder(path)
     } finally {
       setOpening(false)
     }
@@ -372,12 +370,6 @@ function OpenActionButton({ path, action, title, className, children }: {
       {children}
     </button>
   )
-}
-
-function warnOpenResult(result: { ok: boolean; reason?: string }, action: string) {
-  if (!result.ok && result.reason !== 'Debounced') {
-    console.warn(`[DropMedia] ${action} failed: ${result.reason ?? 'Unknown error'}`)
-  }
 }
 
 function SubtitlePreview({ style, thumbnail }: { style: SubtitleStyle; thumbnail?: string }) {

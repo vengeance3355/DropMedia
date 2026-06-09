@@ -10,6 +10,7 @@ import {
   AiSystemReport,
   AiToolState,
   AiToolStatus,
+  DownloadItem,
   LibraryRecord,
   LinkInboxItem,
   PostProcessRecipe,
@@ -64,8 +65,8 @@ declare global {
       updateYtDlp:    ()              => Promise<{ success: boolean; version?: string; error?: string }>
       installFfmpeg:  ()              => Promise<{ success: boolean; error?: string }>
       detectCookieSources: (url?: string) => Promise<Array<{ id: string; label: string; browser: string; profile?: string; hasRelevantCookies: boolean }>>
-      repairMediaMetadata: (id: string) => Promise<{ success: boolean; item?: object; error?: string }>
-      repairThumbnail: (id: string) => Promise<{ success: boolean; item?: object; error?: string }>
+      repairMediaMetadata: (id: string) => Promise<{ success: boolean; item?: DownloadItem; error?: string }>
+      repairThumbnail: (id: string) => Promise<{ success: boolean; item?: DownloadItem; error?: string }>
 
       // Olaylar
       startConvert:      (req: object) => Promise<{ jobId: string }>
