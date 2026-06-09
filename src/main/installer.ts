@@ -243,9 +243,21 @@ function getVersion(bin: string, args = ['--version']): Promise<string> {
   return new Promise((resolve) => {
     const proc = spawn(bin, args)
     let v = ''
+    let settled = false
+    const finish = (value: string): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    // Bozuk binary asılırsa sürüm kontrolü sonsuza dek beklemesin.
+    const timer = setTimeout(() => {
+      try { proc.kill() } catch { /* ignore */ }
+      finish('unknown')
+    }, 8000)
     proc.stdout.on('data', (d: Buffer) => (v += d.toString().trim()))
-    proc.on('close', () => resolve(v || 'unknown'))
-    proc.on('error', () => resolve('unknown'))
+    proc.on('close', () => finish(v || 'unknown'))
+    proc.on('error', () => finish('unknown'))
   })
 }
 

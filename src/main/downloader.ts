@@ -218,10 +218,21 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
         || lower.includes('cookies')
         || isCookieExtractionError(lower)
       if (isFormatOrCookieError && (!isAuthenticationRequiredError(lower) || isCookieExtractionError(lower))) {
-        const noCookieArgs = [...baseArgs, ...buildAccessArgs(url, { cookieBrowser: '' }), url]
+        // 'disabled' şart: '' resolveCookieBrowser'da AUTO'ya düşer ve yine
+        // aynı cookie'li argümanı üretir (DPAPI hatası sonsuza dek tekrarlardı).
+        const noCookieArgs = [...baseArgs, ...buildAccessArgs(url, { cookieBrowser: 'disabled' }), url]
         const retry = await runProcess(bin, noCookieArgs)
         if (retry.code === 0) {
           result = retry
+          usedArgs = noCookieArgs
+        } else {
+          // Retry de düştü: asıl sebep cookiesiz denemenin hatası. İkisini de
+          // logla — eskiden yalnız ilk (cookie) hata loglanıp gerçek sebep
+          // maskeleniyordu.
+          result = {
+            ...retry,
+            stderr: `[cookie'li deneme]\n${result.stderr}\n\n[cookiesiz tekrar]\n${retry.stderr}`
+          }
           usedArgs = noCookieArgs
         }
       }
@@ -476,7 +487,8 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
           return
         }
         getMainWindow()?.webContents.send('download-log', { id, msg: 'Cookie ile format hatası alındı, cookiesiz tekrar deneniyor…' })
-        startDownloadProcess({ ...opts, cookieBrowser: '' }, 'retry-no-cookies')
+        // 'disabled' şart: '' AUTO'ya düşüp yine cookie eklerdi.
+        startDownloadProcess({ ...opts, cookieBrowser: 'disabled' }, 'retry-no-cookies')
         return
       }
     }
@@ -632,14 +644,21 @@ function setCache(url: string, data: object): void {
 
 // ── Yardımcılar ───────────────────────────────────────────────────────────────
 
-function runProcess(bin: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string; spawnError?: Error }> {
+function runProcess(bin: string, args: string[], timeoutMs = 120_000): Promise<{ code: number | null; stdout: string; stderr: string; spawnError?: Error }> {
   return new Promise((resolve) => {
     const proc = spawn(bin, args)
     let stdout = '', stderr = ''
+    let settled = false
+    // yt-dlp asılırsa (ölü ağ/bozuk extractor) fetch-info sonsuza dek beklerdi.
+    const timer = setTimeout(() => {
+      if (settled) return
+      stderr += '\n(zaman aşımı: süreç sonlandırıldı)'
+      try { proc.kill() } catch { /* ignore */ }
+    }, timeoutMs)
     proc.stdout.on('data', (d: Buffer) => (stdout += d.toString()))
     proc.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
-    proc.on('close', (code) => resolve({ code, stdout, stderr }))
-    proc.on('error', (spawnError: Error) => resolve({ code: null, stdout, stderr, spawnError }))
+    proc.on('close', (code) => { settled = true; clearTimeout(timer); resolve({ code, stdout, stderr }) })
+    proc.on('error', (spawnError: Error) => { settled = true; clearTimeout(timer); resolve({ code: null, stdout, stderr, spawnError }) })
   })
 }
 

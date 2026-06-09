@@ -84,10 +84,12 @@ async function postToSupabase(table: string, data: object): Promise<void> {
   }
 
   const sent = await sendToSupabase(table, data)
-  if (!sent) queueRemotePayload(table, data, 'send_failed')
+  if (sent === 'retry') queueRemotePayload(table, data, 'send_failed')
 }
 
-async function sendToSupabase(table: string, data: object): Promise<boolean> {
+// 'ok' = gitti, 'retry' = geçici hata (kuyruğa al), 'drop' = kalıcı hata
+// (400/401/403/404 vb. — tekrar denemek sonsuza dek aynı hatayı üretir).
+async function sendToSupabase(table: string, data: object): Promise<'ok' | 'retry' | 'drop'> {
   try {
     const { net } = await import('electron')
     const req = net.request({
@@ -99,28 +101,30 @@ async function sendToSupabase(table: string, data: object): Promise<boolean> {
     req.setHeader('Authorization', `Bearer ${SUPABASE_KEY}`)
     req.setHeader('Prefer', 'return=minimal')
 
-    return await new Promise<boolean>((resolve) => {
+    return await new Promise<'ok' | 'retry' | 'drop'>((resolve) => {
       req.on('response', (res) => {
         let body = ''
         res.on('data', (chunk) => (body += chunk.toString()))
         res.on('end', () => {
-          if ((res.statusCode ?? 0) >= 400) {
-            noteRemoteFailure({ table, status_code: res.statusCode, response: sanitizeText(body).slice(0, 1000) })
-            resolve(false)
+          const status = res.statusCode ?? 0
+          if (status >= 400) {
+            noteRemoteFailure({ table, status_code: status, response: sanitizeText(body).slice(0, 1000) })
+            const transient = status === 408 || status === 429 || status >= 500
+            resolve(transient ? 'retry' : 'drop')
             return
           }
-          resolve(true)
+          resolve('ok')
         })
       })
       req.on('error', (err) => {
         noteRemoteFailure({ table, error: sanitizeText(err.message) })
-        resolve(false)
+        resolve('retry')
       })
       req.write(JSON.stringify(data))
       req.end()
     })
   } catch {
-    return false
+    return 'retry'
   }
 }
 
@@ -317,7 +321,7 @@ export async function flushPendingRemoteLogs(): Promise<void> {
     try {
       const item = JSON.parse(line) as { table: string; data: object }
       const sent = await sendToSupabase(item.table, item.data)
-      if (!sent) failed.push(line)
+      if (sent === 'retry') failed.push(line) // 'drop': kalıcı hata, kuyruğu zehirlemesin
     } catch {
       failed.push(line)
     }
