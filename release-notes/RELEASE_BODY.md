@@ -86,3 +86,18 @@ Ana sürüm
 - feat: Supabase logging, release script, env config, admin panel deploy
 - feat: admin panel, Supabase logger, crash protection
 - feat: DropMedia initial commit
+
+---
+
+# 1.0.5
+- fix(ai): güvenlik review bulgularını kapat (stop, leak, injection, embed-host)
+- feat(ai): AI redesign — streaming chat + RAG @video + model manager + hardening
+- fix(downloader): retry respawn'da bekleyen iptal/duraklat sızıntısı
+- fix(ai/security): OLLAMA_HOST'u loopback'e kısıtla
+- feat(ai): aktif-model çözümleyici + benchmark kurulu modeli kullanır
+- fix(ai-chat): keyword-hijack kaldır + history race düzelt
+- fix(ai): geçersiz Ollama model tag'lerini düzelt (qwen3.5 -> qwen2.5)
+- fix: installer logo/spinner + SubtitleTab ölü butonlar + typecheck hataları
+- fix(installer): uzun release notlarına scroll ekle
+- fix(release): changelog notlarını stable..HEAD aralığından üret
+- chore(admin): release yönetimini komple kaldır (in-app + admin-panel API)
