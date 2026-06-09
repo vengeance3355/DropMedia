@@ -10,6 +10,7 @@ interface InstallerInfo {
   latestVersion:    string | null
   installDir:       string
   notes:            string
+  autoStart?:       boolean
 }
 
 // ── Simgeler ──────────────────────────────────────────────────────────────────
@@ -285,7 +286,7 @@ export default function App() {
       setInstallDir(i.installDir)
       setScreen('welcome')
 
-      if (i.mode === 'update' && (window as any).__AUTO_UPDATE) {
+      if (i.mode === 'update' && i.autoStart) {
         triggerAction('update')
       }
     })
