@@ -44,6 +44,31 @@ export function UpdateBanner() {
     )
   }
 
+  if (status.type === 'downloading') {
+    const pct = status.progress?.percent ?? 0
+    const mb = status.progress?.transferred ? (status.progress.transferred / 1024 / 1024).toFixed(1) : '0'
+    const totalMb = status.progress?.total ? (status.progress.total / 1024 / 1024).toFixed(1) : '?'
+    return (
+      <Banner color="blue">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="text-white/80 text-xs shrink-0">Güncelleyici indiriliyor... {mb} / {totalMb} MB</span>
+          <div className="h-1.5 w-40 overflow-hidden rounded-full bg-white/10">
+            <div className="h-full rounded-full bg-blue-400/80 transition-all duration-300" style={{ width: `${Math.max(2, pct)}%` }}/>
+          </div>
+          <span className="text-white/50 text-xs shrink-0">{pct}%</span>
+        </div>
+      </Banner>
+    )
+  }
+
+  if (status.type === 'downloaded') {
+    return (
+      <Banner color="green">
+        <span className="text-white/80 text-xs">Güncelleyici başlatılıyor, uygulama kapanacak...</span>
+      </Banner>
+    )
+  }
+
   if (status.type === 'error') {
     return (
       <Banner color="red" onDismiss={() => setDismissed(true)}>

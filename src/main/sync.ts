@@ -113,7 +113,8 @@ async function signOut(): Promise<SyncStatus> {
     await restRequest('/auth/v1/logout', {
       method: 'POST',
       token: session.access_token,
-      body: {}
+      body: {},
+      silent: true // logout best-effort; süresi dolmuş token 401/403 verir, beklenen
     }).catch(() => {})
   }
   store.delete(SESSION_KEY)
@@ -124,7 +125,9 @@ async function pushProductState(state: object): Promise<{ ok: true; syncedAt: nu
   const session = await requireSession()
   await assertSyncReachable()
   const syncedAt = Date.now()
-  await restRequest('/rest/v1/user_settings', {
+  // on_conflict şart: merge-duplicates tek başına PK'ya (id) bakar; satır
+  // (user_id, namespace) unique'ine çarpıp 409 verir (yedekleme hep düşerdi).
+  await restRequest('/rest/v1/user_settings?on_conflict=user_id,namespace', {
     method: 'POST',
     token: session.access_token,
     prefer: 'resolution=merge-duplicates,return=minimal',
@@ -212,7 +215,7 @@ async function authRequest(path: string, body: object): Promise<AuthResponse> {
   return restRequest<AuthResponse>(path, { method: 'POST', body })
 }
 
-async function restRequest<T>(path: string, opts: { method: 'GET' | 'POST'; body?: object; token?: string; prefer?: string }): Promise<T> {
+async function restRequest<T>(path: string, opts: { method: 'GET' | 'POST'; body?: object; token?: string; prefer?: string; silent?: boolean }): Promise<T> {
   assertConfigured()
   const { net } = await import('electron')
   const url = `${SUPABASE_URL}${path}`
@@ -230,12 +233,16 @@ async function restRequest<T>(path: string, opts: { method: 'GET' | 'POST'; body
       res.on('end', () => {
         if ((res.statusCode ?? 0) >= 400) {
           const message = parseError(raw)
-          logError({
-            errorType: 'settings',
-            errorMessage: 'Sync isteği başarısız.',
-            operation: 'sync-request',
-            details: { statusCode: res.statusCode, path, message }
-          })
+          // silent: beklenen hatalar (örn. süresi dolmuş token'la best-effort
+          // logout 401/403 verir) error_logs'u kirletmesin.
+          if (!opts.silent) {
+            logError({
+              errorType: 'settings',
+              errorMessage: 'Sync isteği başarısız.',
+              operation: 'sync-request',
+              details: { statusCode: res.statusCode, path, message }
+            })
+          }
           reject(new Error(message || 'Sync isteği başarısız.'))
           return
         }

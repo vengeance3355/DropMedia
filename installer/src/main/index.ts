@@ -250,9 +250,10 @@ async function performInstall(
     )
   })
 
-  // Çıkart
-  onProgress(76, 'Dosyalar çıkartılıyor...')
-  await new Promise<void>((resolve, reject) => {
+  // Çıkart — başarısızlıkta bir kez daha dene (dosya kilidi gibi geçici
+  // sebepler), sonra kritik dosyayı doğrula. Yarım kurulumun "tamamlandı"
+  // sayılıp version.json yazılması felaket olur.
+  const extract = (): Promise<void> => new Promise<void>((resolve, reject) => {
     const ps = spawn('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-Command',
       `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${dir}' -Force`
@@ -267,6 +268,19 @@ async function performInstall(
     })
     ps.on('error', e => { clearInterval(tick); reject(e) })
   })
+
+  onProgress(76, 'Dosyalar çıkartılıyor...')
+  try {
+    await extract()
+  } catch {
+    onProgress(76, 'Çıkartma tekrar deneniyor...')
+    await new Promise(r => setTimeout(r, 2000))
+    await extract()
+  }
+
+  if (!existsSync(join(dir, 'DropMedia.exe'))) {
+    throw new Error('Kurulum doğrulanamadı: DropMedia.exe çıkartılamadı. Tekrar deneyin.')
+  }
 
   // Temizle
   try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}

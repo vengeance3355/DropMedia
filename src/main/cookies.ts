@@ -120,7 +120,21 @@ export function resolveCookieBrowser(setting?: string, url?: string): string | u
 
 function profileDirs(def: BrowserDef): string[] {
   try {
-    if (def.rootProfile) return ['']
+    if (def.rootProfile) {
+      // Eski Opera düzeni: çerez kökte. Yeni Opera/Opera GX: Chrome gibi
+      // Default / "Profile N" alt dizinlerinde. İkisini de destekle.
+      const dirs: string[] = []
+      if (existsSync(join(def.root, 'Network', 'Cookies')) || existsSync(join(def.root, 'Cookies'))) {
+        dirs.push('')
+      }
+      const entries = readdirSync(def.root, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => entry.name)
+      for (const name of entries) {
+        if (name === 'Default' || name.startsWith('Profile ')) dirs.push(name)
+      }
+      return dirs.length ? dirs : ['']
+    }
 
     const entries = readdirSync(def.root, { withFileTypes: true })
       .filter(entry => entry.isDirectory())
@@ -154,12 +168,15 @@ function cookiePathFor(def: BrowserDef, profile: string): string | null {
 }
 
 function cookieArgFor(def: BrowserDef, profile: string): string {
-  if (def.rootProfile) return `${def.browser}:${def.root}`
+  // rootProfile tarayıcılarda (Opera/GX) yt-dlp'nin "opera" anahtarı yalnızca
+  // Opera Stable'ı bulur; profil olarak TAM YOL geçilir (yt-dlp destekler).
+  if (def.rootProfile) return `${def.browser}:${profile ? join(def.root, profile) : def.root}`
   return `${def.browser}:${profile}`
 }
 
 function profileLabel(def: BrowserDef, profile: string): string {
-  return def.rootProfile ? def.label : `${def.label} (${profile})`
+  if (def.rootProfile) return profile ? `${def.label} (${profile})` : def.label
+  return `${def.label} (${profile})`
 }
 
 function hasDomainCookie(kind: BrowserDef['kind'], dbPath: string, domains: string[]): boolean {
