@@ -125,3 +125,8 @@ Ana sürüm
 # 1.0.9
 - Hesap girişi ve uzak hata kayıtları düzeltildi (uygulama kimliği pakete eklenmedi sorunu)
 - Chrome çerez hatasında indirme artık otomatik çerezsiz devam ediyor
+
+---
+
+# 1.0.10
+- Uygulama içi güncelleme bildirimi bazen hiç görünmüyordu, düzeltildi
