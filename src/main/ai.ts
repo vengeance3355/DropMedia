@@ -2131,6 +2131,24 @@ function resolveActiveModel(installedNames: string[]): string | null {
   return installedNames[0] ?? null
 }
 
+// İstenen model kuruluysa onu, değilse aktif/kurulu modeli döndür. Eskiden
+// model geçilmeyen işler (özet/başlık) hardcoded varsayılana (qwen2.5:7b)
+// düşüyordu; o model kurulu değilse Ollama 404 "model not found" veriyordu.
+async function resolveRequestModel(requested?: string): Promise<string> {
+  const wanted = requested?.trim() || ''
+  try {
+    const bin = await detectOllamaCommand()
+    const list = bin ? await runSimple(bin, ['list'], undefined, 8_000) : null
+    const names = list && list.code === 0 ? parseOllamaModelNames(list.stdout) : []
+    if (names.length) {
+      if (wanted && modelInstalled(names, wanted)) return wanted
+      const active = resolveActiveModel(names)
+      if (active) return active
+    }
+  } catch { /* liste alınamazsa istenen/varsayılana düş */ }
+  return wanted || ollamaModel
+}
+
 function ollamaChatModelLabel(model: AiChatModel, installed: boolean): string {
   const size = model.sizeHint ? ` · ${model.sizeHint}` : ''
   const status = installed ? ' · kurulu' : ' · kurulu değil'
@@ -2805,7 +2823,7 @@ async function listAiChatModels(): Promise<AiChatModel[]> {
 async function sendAiChatMessage(req: AiChatSendRequest): Promise<AiChatSendResult> {
   const messageText = String(req.message ?? '').trim()
   if (!messageText) throw new Error('Mesaj boş.')
-  const model = req.model?.trim() || ollamaModel
+  const model = await resolveRequestModel(req.model)
   const now = Date.now()
   const existing = req.sessionId ? listChatSessions().find(item => item.id === req.sessionId) : undefined
   const session: AiChatSession = existing ?? {
@@ -3151,7 +3169,7 @@ async function runOllamaTextJob(job: AiJob, req: AiJobStartRequest, mode: 'summa
     job,
     prompt,
     mode === 'summary' ? 'Özet üretiliyor...' : 'Başlık ve etiket üretiliyor...',
-    req.model ?? ollamaModel
+    await resolveRequestModel(req.model)
   )
   const text = result.response.trim()
   if (!text) throw new Error('Ollama boş yanıt döndürdü.')

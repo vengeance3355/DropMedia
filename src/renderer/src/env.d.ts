@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 import {
+  AdminRelease,
+  AdminReleasePublishInput,
+  AdminStatus,
   AiChatModel,
   AiChatSendRequest,
   AiChatSendResult,
@@ -161,6 +164,16 @@ declare global {
       signOutSync:          () => Promise<SyncStatus>
       pushProductState:     (state: ProductHubState) => Promise<{ ok: true; syncedAt: number }>
       pullProductState:     () => Promise<{ data: Partial<ProductHubState> | null; syncedAt?: string }>
+
+      // Admin
+      getAdminStatus:       () => Promise<AdminStatus>
+      loginAdmin:           (password: string) => Promise<AdminStatus>
+      logoutAdmin:          () => Promise<AdminStatus>
+      listAdminReleases:    () => Promise<{ data?: AdminRelease[]; count?: number; source?: string }>
+      saveAdminRelease:     (payload: Partial<AdminRelease>) => Promise<{ data?: AdminRelease }>
+      publishAdminRelease:  (payload: AdminReleasePublishInput) => Promise<{ ok: boolean; workflow?: string; ref?: string; target?: string; workflow_url?: string }>
+      deleteAdminRelease:   (id: number) => Promise<{ ok: boolean }>
+      editAdminRelease:     (id: number, notes: string) => Promise<{ ok: boolean; data?: AdminRelease }>
 
       // Sistem
       selectFolder:       () => Promise<string | null>

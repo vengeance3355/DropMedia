@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'DropMedia Admin',
+  title: 'DropMedia Admin Paneli',
   robots: 'noindex, nofollow'
 }
 

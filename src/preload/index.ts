@@ -176,6 +176,16 @@ const api = {
   pushProductState:     (state: object) => ipcRenderer.invoke('sync-push-product-state', state),
   pullProductState:     () => ipcRenderer.invoke('sync-pull-product-state'),
 
+  // Admin
+  getAdminStatus:       () => ipcRenderer.invoke('admin-status'),
+  loginAdmin:           (password: string) => ipcRenderer.invoke('admin-login', password),
+  logoutAdmin:          () => ipcRenderer.invoke('admin-logout'),
+  listAdminReleases:    () => ipcRenderer.invoke('admin-releases-list'),
+  saveAdminRelease:     (payload: object) => ipcRenderer.invoke('admin-release-save', payload),
+  publishAdminRelease:  (payload: object) => ipcRenderer.invoke('admin-release-publish', payload),
+  deleteAdminRelease:   (id: number) => ipcRenderer.invoke('admin-releases-delete', id),
+  editAdminRelease:     (id: number, notes: string) => ipcRenderer.invoke('admin-release-edit', id, notes),
+
   // Sistem
   getThumbnail:       (path: string) => ipcRenderer.invoke('get-thumbnail', path),
   selectFolder:       () => ipcRenderer.invoke('dialog-select-folder'),
