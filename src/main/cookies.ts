@@ -10,6 +10,7 @@ export interface CookieSource {
   path: string
   arg: string
   hasRelevantCookies: boolean
+  locked?: boolean
 }
 
 interface BrowserDef {
@@ -21,6 +22,48 @@ interface BrowserDef {
 }
 
 const IS_WIN = process.platform === 'win32'
+
+// Tarayıcı AÇIKKEN chromium çerez DB'si kilitlidir; yt-dlp kopyalayamaz
+// ("Could not copy Chrome cookie database", yt-dlp#7271). AUTO seçim çalışan
+// tarayıcıyı atlasın diye süreç listesi kontrol edilir (5sn cache).
+const BROWSER_PROCESSES: Record<string, string[]> = {
+  chrome: ['chrome.exe'],
+  chromium: ['chromium.exe'],
+  brave: ['brave.exe'],
+  opera: ['opera.exe'],
+  edge: ['msedge.exe']
+}
+
+let runningProcsCache: { at: number; names: Set<string> } | null = null
+
+function runningProcessNames(): Set<string> {
+  if (runningProcsCache && Date.now() - runningProcsCache.at < 5000) return runningProcsCache.names
+  const names = new Set<string>()
+  try {
+    const r = spawnSync('tasklist', ['/FO', 'CSV', '/NH'], { timeout: 4000 })
+    for (const line of (r.stdout?.toString() ?? '').split('\n')) {
+      const m = line.match(/^"([^"]+)"/)
+      if (m) names.add(m[1].toLowerCase())
+    }
+  } catch { /* tasklist yoksa kilit tespiti devre dışı kalır */ }
+  runningProcsCache = { at: Date.now(), names }
+  return names
+}
+
+function isBrowserLocked(browser: string, kind: 'firefox' | 'chromium'): boolean {
+  if (!IS_WIN || kind !== 'chromium') return false
+  const procs = BROWSER_PROCESSES[browser] ?? []
+  if (!procs.length) return false
+  const running = runningProcessNames()
+  return procs.some(p => running.has(p))
+}
+
+// AUTO'nun normalde seçeceği ama tarayıcı açık olduğu için kilitli olan en iyi
+// kaynak — indirme hatalarında "tarayıcıyı kapatın" yönlendirmesi için.
+export function lockedAutoSourceLabel(url?: string): string | null {
+  const locked = detectCookieSources(url).find(source => source.locked)
+  return locked?.label ?? null
+}
 
 // Platform-aware home paths
 const HOME         = process.env.HOME ?? process.env.USERPROFILE ?? ''
@@ -73,33 +116,43 @@ export function detectCookieSources(url?: string): CookieSource[] {
         profile: def.rootProfile ? undefined : profile,
         path: cookiePath,
         arg,
-        hasRelevantCookies
+        hasRelevantCookies,
+        locked: isBrowserLocked(def.browser, def.kind)
       })
     }
   }
 
   return sources.sort((a, b) => {
     if (a.hasRelevantCookies !== b.hasRelevantCookies) return a.hasRelevantCookies ? -1 : 1
+    if (!!a.locked !== !!b.locked) return a.locked ? 1 : -1
     return browserRank(a.browser) - browserRank(b.browser)
   })
 }
 
 // Hafif kaynak bulma — sqlite3 çalıştırmaz, sadece dosya varlığı kontrol eder.
-function findCookieSources(): { arg: string; browser: string }[] {
-  const sources: { arg: string; browser: string }[] = []
+function findCookieSources(): { arg: string; browser: string; locked: boolean }[] {
+  const sources: { arg: string; browser: string; locked: boolean }[] = []
   for (const def of getBrowserDefs()) {
     if (!existsSync(def.root)) continue
     for (const profile of profileDirs(def)) {
       const cookiePath = cookiePathFor(def, profile)
       if (!cookiePath || !existsSync(cookiePath)) continue
-      sources.push({ arg: cookieArgFor(def, profile), browser: def.browser })
+      sources.push({
+        arg: cookieArgFor(def, profile),
+        browser: def.browser,
+        locked: isBrowserLocked(def.browser, def.kind)
+      })
     }
   }
   return sources.sort((a, b) => browserRank(a.browser) - browserRank(b.browser))
 }
 
 export function resolveAutoCookieBrowser(url?: string): string | undefined {
-  return detectCookieSources(url)[0]?.arg ?? findCookieSources()[0]?.arg
+  // Kilitli (açık tarayıcı) kaynakları atla: denemesi kesin başarısız, her
+  // işlemde ilk denemeyi boşa harcar + log kirletir.
+  const detected = detectCookieSources(url).find(source => !source.locked)
+  if (detected) return detected.arg
+  return findCookieSources().find(source => !source.locked)?.arg
 }
 
 export function resolveCookieBrowser(setting?: string, url?: string): string | undefined {

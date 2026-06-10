@@ -502,25 +502,25 @@ export default function App() {
           <aside className="flex w-[220px] shrink-0 flex-col border-r border-white/[0.04] bg-[#0F0F12]/95 px-3 py-4">
             <nav className="flex-1 overflow-y-auto flex flex-col gap-1 min-h-0 pb-2">
               <SidebarItem active={activeTab === 'queue'} onClick={() => setActiveTab('queue')} icon={<DownloadIcon />}>
-                İndir{queueItems.length > 0 && <Badge>{queueItems.length}</Badge>}
+                İndir{queueItems.length > 0 && <Badge>{queueItems.length}</Badge>}{activeCount > 0 && <ActiveDot />}
               </SidebarItem>
               <SidebarItem active={activeTab === 'links'} onClick={() => setActiveTab('links')} icon={<LinkIcon />}>
                 Linkler
               </SidebarItem>
               <SidebarItem active={activeTab === 'watch'} onClick={() => setActiveTab('watch')} icon={<WatchIcon />}>
-                Takip
+                Takip<BetaBadge />
               </SidebarItem>
               <SidebarItem active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<LibraryIcon />}>
                 Kütüphane
               </SidebarItem>
               <SidebarItem active={activeTab === 'automation'} onClick={() => setActiveTab('automation')} icon={<AutomationIcon />}>
-                Otomasyon
+                Otomasyon<BetaBadge />
               </SidebarItem>
               <SidebarItem active={activeTab === 'ai'} onClick={() => setActiveTab('ai')} icon={<AiIcon />}>
-                AI
+                AI<BetaBadge />
               </SidebarItem>
               <SidebarItem active={activeTab === 'ai-chat'} onClick={() => setActiveTab('ai-chat')} icon={<AiIcon />}>
-                AI Chat
+                AI Chat<BetaBadge />
               </SidebarItem>
               <SidebarItem active={activeTab === 'account'} onClick={() => setActiveTab('account')} icon={<AccountIcon />}>
                 Hesap
@@ -540,14 +540,6 @@ export default function App() {
             </nav>
 
             <div className="shrink-0 space-y-3 pt-2">
-              {activeCount > 0 && (
-                <div className="rounded-xl border border-[#7C3AED]/20 bg-[#7C3AED]/10 px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-[#8B5CF6] animate-pulse" />
-                    <span className="text-[11px] font-medium text-violet-200">{activeCount} aktif indirme</span>
-                  </div>
-                </div>
-              )}
               <SidebarItem active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} icon={<LockIcon />}>
                 Admin
               </SidebarItem>
@@ -861,6 +853,24 @@ function SidebarItem({ active, onClick, icon, children }: { active: boolean; onC
       <span className="flex h-5 w-5 items-center justify-center">{icon}</span>
       {children}
     </button>
+  )
+}
+
+// Aktif işlem göstergesi: yazı yok, sadece nefes alan nokta.
+function ActiveDot() {
+  return (
+    <span className="relative ml-1.5 flex h-2 w-2">
+      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400 opacity-60" />
+      <span className="relative inline-flex h-2 w-2 rounded-full bg-violet-400" />
+    </span>
+  )
+}
+
+function BetaBadge() {
+  return (
+    <span className="ml-1.5 rounded-md border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider leading-none text-violet-300/80">
+      Beta
+    </span>
   )
 }
 

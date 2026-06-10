@@ -83,7 +83,9 @@ export async function GET(req: NextRequest) {
   const start = (page - 1) * limit
   return NextResponse.json({
     data: merged.slice(start, start + limit),
-    count: merged.length,
+    // count = GERÇEK toplam (Supabase exact count). merged.length sayfadaki
+    // ≤50 satırdı; sayaç hep 49/50'de takılı görünüyordu.
+    count: count ?? merged.length,
     page,
     limit,
     source: merged.length > (data?.length ?? 0) ? 'mixed' : 'supabase'
