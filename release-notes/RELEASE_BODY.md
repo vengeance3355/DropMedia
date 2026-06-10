@@ -186,3 +186,8 @@ Installer artik DONMUYOR (tamamen async): kaldirma %20'de takilip 'yanit vermiyo
 
 # 1.0.19
 Kaldirma sirasinda AV-kilitli kalan dosya icin reboot temizligi planlanmissa, kullanici reboot'tan once yeniden kurarsa taze kurulumun silinmesi engellendi (kurulum o bekleyen gorevi iptal ediyor). Diger tum 1.0.18 duzeltmeleri dahil.
+
+---
+
+# 1.0.20
+Instagram story/gonderi cerezi artik TUM tarayicilari deniyor (varsayilan tarayicin Instagram'a girisli degilse bile baska girisli tarayici bulunursa calisir). Eski/tasinabilir kopya uyarisi: ZIP'i masaustune cikarip oradan acan kullanicilar hep eski surum + surekli guncelle banner goruyordu; artik kurulu surumu acmaya yonlendiriyor.
