@@ -1,4 +1,4 @@
 {
-  "version": "1.0.13",
-  "notes": "- Admin Seçenekleri geri geldi (release yönetimi uygulama içinde)\n- AI özet artık seçili/kurulu modeli kullanıyor (404 model hatası düzeltildi)\n- Çerez kaynaklı tekrar denemeler artık admin loguna yazılıyor\n- yt-dlp sürümü loglarda doğru görünüyor"
+  "version": "1.0.14",
+  "notes": "- AI artık çok aşamalı çalışıyor: özet istediğinde transcript yoksa önce kendisi çıkarıyor (AI Chat dahil)\n- Tarayıcı açıkken çerez hatası ve gereksiz uyarılar kalktı; giriş isteyen içerikte net yönlendirme\n- İndir sekmesinde aktif işlem göstergesi; Takip/Otomasyon/AI/AI Chat artık Beta rozetli"
 }

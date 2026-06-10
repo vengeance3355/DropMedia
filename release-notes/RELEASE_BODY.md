@@ -152,3 +152,10 @@ Ana sürüm
 - AI özet artık seçili/kurulu modeli kullanıyor (404 model hatası düzeltildi)
 - Çerez kaynaklı tekrar denemeler artık admin loguna yazılıyor
 - yt-dlp sürümü loglarda doğru görünüyor
+
+---
+
+# 1.0.14
+- AI artık çok aşamalı çalışıyor: özet istediğinde transcript yoksa önce kendisi çıkarıyor (AI Chat dahil)
+- Tarayıcı açıkken çerez hatası ve gereksiz uyarılar kalktı; giriş isteyen içerikte net yönlendirme
+- İndir sekmesinde aktif işlem göstergesi; Takip/Otomasyon/AI/AI Chat artık Beta rozetli
