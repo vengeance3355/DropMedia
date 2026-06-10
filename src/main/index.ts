@@ -1,8 +1,8 @@
 import { spawn } from 'child_process'
 import { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, globalShortcut, clipboard, net } from 'electron'
-import { join } from 'path'
-import { tmpdir } from 'os'
-import { existsSync, appendFileSync } from 'fs'
+import { join, dirname } from 'path'
+import { tmpdir, homedir } from 'os'
+import { existsSync, appendFileSync, readFileSync } from 'fs'
 
 function dbgSettings(msg: string) {
   try { appendFileSync(join(tmpdir(), 'dropmedia_settings.log'), `[${new Date().toISOString()}] ${msg}\n`) } catch { /* ignore */ }
@@ -222,6 +222,43 @@ function registerClipboardShortcut(shortcut: string): void {
   }
 }
 
+// ── Eski/taşınabilir kopya tespiti ────────────────────────────────────────────
+// Kullanıcılar ZIP'i Desktop'a çıkarıp oradan açınca, installer AppData'ya
+// kursa bile o ESKİ kopya açılıyor → hep eski sürüm + sürekli "güncelle" banner.
+// Çözüm: kurulu sürüm dururken kurulu-olmayan konumdan açılırsa uyar/yönlendir.
+
+function warnIfStaleCopy(): void {
+  try {
+    if (!app.isPackaged || process.platform !== 'win32') return
+    const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local')
+    const canonicalDir = join(localAppData, 'DropMedia')
+    const canonicalExe = join(canonicalDir, 'DropMedia.exe')
+    const runningDir = dirname(app.getPath('exe'))
+
+    if (runningDir.toLowerCase() === canonicalDir.toLowerCase()) return // zaten kurulu kopya
+    if (!existsSync(canonicalExe)) return // kurulu sürüm yok → bu tek kopya, sorun değil
+    if (canonicalExe.toLowerCase() === app.getPath('exe').toLowerCase()) return
+
+    let installedVer = ''
+    try { installedVer = JSON.parse(readFileSync(join(canonicalDir, 'version.json'), 'utf8')).version || '' } catch { /* ignore */ }
+
+    const choice = dialog.showMessageBoxSync({
+      type: 'warning',
+      title: 'DropMedia — eski kopya',
+      message: 'Kurulu olmayan, eski bir kopyayı açtınız.',
+      detail: `Bilgisayarınızda DropMedia zaten kurulu${installedVer ? ` (v${installedVer})` : ''}. Bu klasörden (${runningDir}) açılan kopya GÜNCELLENMEZ; bu yüzden hep eski sürüm görünür ve sürekli güncelleme uyarısı çıkar.\n\nKurulu (güncel) sürümü açmanızı ve bu eski klasörü silmenizi öneririz.`,
+      buttons: ['Kurulu sürümü aç', 'Yine de bununla devam et'],
+      defaultId: 0,
+      cancelId: 1
+    })
+    if (choice === 0) {
+      spawn(canonicalExe, [], { detached: true, stdio: 'ignore' }).unref()
+      app.isQuiting = true
+      app.quit()
+    }
+  } catch { /* sessiz */ }
+}
+
 // ── Crash koruması ────────────────────────────────────────────────────────────
 
 process.on('uncaughtException',  (err)    => logError({ errorType: 'crash', errorMessage: err.message, stackTrace: err.stack }))
@@ -288,6 +325,9 @@ app.whenReady().then(() => {
   createWindow()
   setupTray()
   setupUpdater(mainWindow!)
+  // Eski/taşınabilir kopya uyarısı: kurulu sürüm dururken Desktop'taki çıkarılmış
+  // ZIP'ten açılan kopya hep eski kalır + sürekli güncelle banner'ı verir.
+  warnIfStaleCopy()
   startAdminBridge()
   startProductWatchScheduler()
   flushPendingRemoteLogs()

@@ -19,7 +19,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSyn
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Store from 'electron-store'
-import { resolveCookieBrowser, cookieSnapshotMissingLabel } from './cookies'
+import { resolveCookieBrowser, cookieSnapshotMissingLabel, listCookieExportArgs } from './cookies'
 import { getYtDlpPath } from './downloader'
 import { logError, logDownload } from './logger'
 
@@ -82,13 +82,8 @@ interface CookieBundle { header: string; csrf?: string }
 let cookieCache: { bundle: CookieBundle; at: number } | null = null
 const COOKIE_TTL = 5 * 60_000
 
-function exportCookieBundle(): Promise<CookieBundle | null> {
-  const cached = cookieCache
-  if (cached && Date.now() - cached.at < COOKIE_TTL) return Promise.resolve(cached.bundle)
-
-  const source = resolveCookieBrowser(store.get('cookieBrowser') as string | undefined, 'https://www.instagram.com/')
-  if (!source) return Promise.resolve(null)
-
+// Tek bir tarayıcı kaynağından Instagram çerezi yakala (yt-dlp jar export).
+function exportFromSource(source: string): Promise<CookieBundle | null> {
   const jar = join(tmpdir(), `dropmedia-ig-jar-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
   return new Promise((resolve) => {
     // URL "unsupported" hatası verir (exit != 0) ama jar yine de yazılır —
@@ -108,6 +103,7 @@ function exportCookieBundle(): Promise<CookieBundle | null> {
         const lines = readFileSync(jar, 'utf8').split('\n')
         const pairs: string[] = []
         let csrf: string | undefined
+        let hasSession = false
         for (const rawLine of lines) {
           const line = rawLine.startsWith('#HttpOnly_') ? rawLine.slice('#HttpOnly_'.length) : rawLine
           if (!line || line.startsWith('#')) continue
@@ -119,11 +115,12 @@ function exportCookieBundle(): Promise<CookieBundle | null> {
           if (!name || !trimmed) continue
           pairs.push(`${name}=${trimmed}`)
           if (name === 'csrftoken') csrf = trimmed
+          if (name === 'sessionid') hasSession = true
         }
-        if (!pairs.length) { resolve(null); return }
-        const bundle = { header: pairs.join('; '), csrf }
-        cookieCache = { bundle, at: Date.now() }
-        resolve(bundle)
+        // sessionid yoksa giriş yok (anonim çerez) → bu kaynağı geçersiz say,
+        // sıradaki tarayıcı denensin.
+        if (!hasSession) { resolve(null); return }
+        resolve({ header: pairs.join('; '), csrf })
       } catch {
         resolve(null)
       } finally {
@@ -131,6 +128,27 @@ function exportCookieBundle(): Promise<CookieBundle | null> {
       }
     })
   })
+}
+
+// Story/post için çerez ZORUNLU. Configured tarayıcıyı önce, sonra TÜM tarayıcıları
+// dene (kullanıcının "varsayılan" tarayıcısı Instagram'a girişli değilse bile
+// başka bir tarayıcının girişli çerezi yakalanabilir). "disabled" ayarına takılma.
+async function exportCookieBundle(): Promise<CookieBundle | null> {
+  const cached = cookieCache
+  if (cached && Date.now() - cached.at < COOKIE_TTL) return cached.bundle
+
+  const configured = resolveCookieBrowser(store.get('cookieBrowser') as string | undefined, 'https://www.instagram.com/')
+  const all = listCookieExportArgs()
+  const ordered = configured ? [configured, ...all.filter(a => a !== configured)] : all
+
+  for (const source of ordered) {
+    const bundle = await exportFromSource(source)
+    if (bundle) {
+      cookieCache = { bundle, at: Date.now() }
+      return bundle
+    }
+  }
+  return null
 }
 
 // ── Instagram API GET ─────────────────────────────────────────────────────────

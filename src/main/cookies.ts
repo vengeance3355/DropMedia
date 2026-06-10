@@ -180,6 +180,19 @@ export function resolveAutoCookieBrowser(_url?: string): string | undefined {
   return undefined
 }
 
+// Story/post için: TÜM tarayıcıların okunabilir (snapshot) cookie argümanları
+// (rank sıralı, tekrarsız). exportCookieBundle bunları sırayla dener — kullanıcının
+// "varsayılan" tarayıcısı Instagram'a girişli değilse bile başka bir tarayıcı
+// (Opera/Firefox/Edge) çerezi yakalanabilir. firefox snapshot vermez → canlı arg.
+export function listCookieExportArgs(): string[] {
+  const args: string[] = []
+  for (const ref of listSourceRefs()) {
+    const arg = snapshotArg(ref) ?? (ref.def.kind === 'firefox' ? cookieArgFor(ref.def, ref.profile) : null)
+    if (arg && !args.includes(arg)) args.push(arg)
+  }
+  return args
+}
+
 export function resolveCookieBrowser(setting?: string, url?: string): string | undefined {
   const value = (setting ?? '').trim()
   if (value === 'devre dışı' || value === 'disabled') return undefined
