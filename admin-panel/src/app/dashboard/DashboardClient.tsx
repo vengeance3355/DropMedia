@@ -130,7 +130,9 @@ function mergeLogs(remote: LogsResponse | null, local: LogsResponse | null): Log
 
   return {
     data: items.slice(0, 50),
-    count: items.length
+    // API'nin gerçek toplamını koru: items sayfadaki ≤50 satır, length'i
+    // toplam sanınca sayaç 49/50'de takılıyordu.
+    count: Math.max(remote?.count ?? 0, local?.count ?? 0, items.length)
   }
 }
 

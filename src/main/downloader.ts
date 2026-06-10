@@ -6,7 +6,7 @@ import { tmpdir } from 'os'
 import Store from 'electron-store'
 import { statSync } from 'fs'
 import { logError, logStat, logDownload } from './logger'
-import { detectCookieSources, resolveCookieBrowser } from './cookies'
+import { detectCookieSources, resolveCookieBrowser, lockedAutoSourceLabel } from './cookies'
 import { generateThumbnail, downloadRemoteThumbnail } from './thumbnailCache'
 import { resolveYtDlpPath, resolveFfmpegPath, resolveFfprobePath, getYtDlpBin } from './platform'
 
@@ -289,7 +289,15 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
     }
 
     if (result.code !== 0) {
-      const msg = friendlyError(result.stderr, url, 'fetch')
+      let msg = friendlyError(result.stderr, url, 'fetch')
+      // Giriş isteyen içerik + çerezsiz deneme + asıl çerez kaynağı kilitli
+      // (tarayıcı açık) ise genel mesaj yerine asıl çözümü söyle.
+      if (isAuthenticationRequiredError((result.stderr + result.stdout).toLowerCase()) && !cookieArgOf(usedArgs)) {
+        const locked = lockedAutoSourceLabel(url)
+        if (locked) {
+          msg = `Bu içerik giriş gerektiriyor. ${locked} açık olduğu için çerezleri okunamadı — tarayıcıyı tamamen kapatıp tekrar deneyin.`
+        }
+      }
       await logError({ errorType: 'fetch', errorMessage: msg, url, operation: 'fetch-info', command: formatCommand(bin, usedArgs), exitCode: result.code, stderr: result.stderr, stdout: result.stdout })
       throw new Error(msg)
     }
@@ -733,6 +741,9 @@ function friendlyError(stderr: string, url?: string, phase: 'fetch' | 'download'
   const isTwitter = url ? isTwitterUrl(url) : false
 
   if (text.includes('unsupported url')) return 'Bu bağlantı desteklenmiyor. Direkt video/reel/tweet/story bağlantısı deneyin.'
+  if (text.includes('content is unreachable')) {
+    return 'Bu içerik giriş gerektiriyor (örn. Instagram hikâyesi). Çerez ayarından giriş yaptığınız tarayıcıyı seçin ve o tarayıcı kapalıyken tekrar deneyin.'
+  }
   if (text.includes('private')) return 'Bu içerik gizli veya erişim kısıtlı. Cookie ayarından giriş yaptığınız tarayıcıyı seçip tekrar deneyin.'
   if (text.includes('not a video')) return 'Bu bağlantı video içermiyor. Direkt medya bağlantısı kullanın.'
   if (text.includes('sign in') || text.includes('login required') || text.includes('unauthorized') || text.includes('http error 401')) {

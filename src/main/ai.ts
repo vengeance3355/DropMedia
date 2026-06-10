@@ -2001,6 +2001,17 @@ function readTextSource(inputPath: string): { path: string; text: string } {
   return { path: found, text }
 }
 
+function hasTextSource(inputPath: string): boolean {
+  return textCandidates(inputPath).some(candidate => existsSync(candidate))
+}
+
+// Whisper'a verilebilecek ses/video uzantıları — metin isteyen işler (özet,
+// başlık, çeviri, chat-RAG) transcript'e otomatik zincirlenmeden önce "bu
+// dosyadan transcript çıkarmak anlamlı mı" kontrolü.
+function isTranscribableMedia(inputPath: string): boolean {
+  return /\.(mp4|mkv|webm|mov|avi|m4v|mp3|m4a|wav|aac|opus|flac|ogg)$/i.test(inputPath)
+}
+
 async function getAiToolsStatus(): Promise<AiToolStatus[]> {
   const [whisper, argos, ollama] = await Promise.all([
     diagnosePythonTool('whisper'),
@@ -2844,11 +2855,39 @@ async function sendAiChatMessage(req: AiChatSendRequest): Promise<AiChatSendResu
   session.messages = [...session.messages, userMessage]
   saveChatSession(session)
 
-  // Serbest sohbet HER ZAMAN cevap verir — anahtar kelimeyle ("özet/başlık/çevir")
-  // job kaçırma + dosya yoksa throw etme davranışı kaldırıldı. Transcript/özet/çeviri
-  // gibi işler artık açık butonlarla / video bağlamı (RAG) ile yapılır.
-  const prompt = await buildChatPrompt(session, messageText)
   const win = mainWindow()
+  const emitStatus = (text: string): void => {
+    try {
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send('ai-chat-token', { sessionId: session.id, delta: text })
+      }
+    } catch { /* pencere kapandıysa yut */ }
+  }
+
+  // Çok aşamalı otomasyon (chat): @video bağlıyken transcript yoksa soruyu
+  // körlemesine yanıtlamak yerine önce transcript'i bu akış içinde çıkar
+  // (iş AI sekmesinde de görünür), sonra RAG ile yanıtla.
+  if (session.attachmentPath && !hasTextSource(session.attachmentPath) && isTranscribableMedia(session.attachmentPath)) {
+    emitStatus('_(Videonun transcripti yok; önce çıkarılıyor — video uzunluğuna göre birkaç dakika sürebilir. İlerleme AI sekmesinde.)_\n\n')
+    const tJob = createJob({
+      kind: 'transcript',
+      title: session.attachmentTitle || basename(session.attachmentPath),
+      message: 'Hazırlanıyor...',
+      inputPath: session.attachmentPath
+    })
+    try {
+      await runTranscript(tJob, { kind: 'transcript', inputPath: session.attachmentPath })
+      updateJob(tJob, { status: 'done', percent: 100, message: 'Tamamlandı.' }, true)
+      emitStatus('_(Transcript hazır; yanıt üretiliyor...)_\n\n')
+    } catch (err) {
+      completeError(tJob, err)
+      emitStatus('_(Transcript çıkarılamadı; video içeriği olmadan yanıtlıyorum. Ayrıntı: AI sekmesi / admin logu.)_\n\n')
+    }
+  }
+
+  // Serbest sohbet HER ZAMAN cevap verir — anahtar kelimeyle ("özet/başlık/çevir")
+  // job kaçırma + dosya yoksa throw etme davranışı kaldırıldı.
+  const prompt = await buildChatPrompt(session, messageText)
   let response: string
   try {
     response = await runOllamaChat(model, prompt, {
@@ -3215,9 +3254,20 @@ async function runTranslate(job: AiJob, req: AiJobStartRequest): Promise<string>
 async function runAiJob(job: AiJob, req: AiJobStartRequest): Promise<void> {
   let outputPath: string
   if (req.kind === 'transcript') outputPath = await runTranscript(job, req)
-  else if (req.kind === 'summary') outputPath = await runOllamaTextJob(job, req, 'summary')
-  else if (req.kind === 'titles') outputPath = await runOllamaTextJob(job, req, 'titles')
-  else outputPath = await runTranslate(job, req)
+  else {
+    // Çok aşamalı otomasyon: özet/başlık/çeviri metin kaynağı ister. Transcript
+    // yoksa "önce transcript çıkarın" diye hata atmak yerine aynı iş içinde
+    // önce transcript çıkarılır (Aşama 1/2), sonra asıl işe geçilir.
+    if (!hasTextSource(req.inputPath) && isTranscribableMedia(req.inputPath)) {
+      updateJob(job, { percent: 0, message: 'Aşama 1/2: Önce transcript çıkarılıyor...' })
+      // req.model burada Ollama modeli olabilir; Whisper'a sızdırma (kind+input yeter).
+      await runTranscript(job, { kind: 'transcript', inputPath: req.inputPath })
+      updateJob(job, { percent: 0, message: 'Aşama 2/2: Metin işleniyor...' })
+    }
+    if (req.kind === 'summary') outputPath = await runOllamaTextJob(job, req, 'summary')
+    else if (req.kind === 'titles') outputPath = await runOllamaTextJob(job, req, 'titles')
+    else outputPath = await runTranslate(job, req)
+  }
 
   updateJob(job, { status: 'done', percent: 100, message: 'Tamamlandı.', outputPath }, true)
 }
