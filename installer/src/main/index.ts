@@ -10,7 +10,7 @@
 
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, createWriteStream } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, renameSync, statSync, createWriteStream } from 'fs'
 import { get as httpsGet } from 'https'
 import { spawn, spawnSync } from 'child_process'
 import { tmpdir } from 'os'
@@ -221,7 +221,35 @@ async function killDropMedia(): Promise<void> {
  */
 function rmrf(target: string): void {
   if (!existsSync(target)) return
-  rmSync(target, { recursive: true, force: true, maxRetries: 15, retryDelay: 300 })
+  rmSync(target, { recursive: true, force: true, maxRetries: 25, retryDelay: 400 })
+}
+
+// Kalan dizini bir sonraki oturum açılışında siler (kilit reboot'ta serbest
+// kalır). MoveFileEx yerine RunOnce — P/Invoke gerektirmez, güvenilir.
+function scheduleDeleteOnReboot(target: string): void {
+  try {
+    spawnSync('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce',
+      '/v', `DropMediaCleanup${Date.now()}`, '/t', 'REG_SZ',
+      '/d', `cmd /c rmdir /s /q "${target}"`, '/f'], { stdio: 'ignore', timeout: 5000 })
+  } catch { /* ignore */ }
+}
+
+/**
+ * Dizini kesinlikle "yoldan çıkarır": önce dayanıklı sil; olmazsa yana taşı
+ * (kill sonrası exe ölü olduğundan dizin rename'i çalışır, içteki dosya 3.
+ * partice kilitli olsa bile), sonra reboot'ta sil. Böylece kaldırma/kurulum
+ * ASLA "ENOTEMPTY" ile patlamaz — kullanıcı bir daha o hatayı görmez.
+ */
+function forceRemoveDir(dir: string): void {
+  if (!existsSync(dir)) return
+  try { rmrf(dir); return } catch { /* hâlâ kilitli — yana taşımayı dene */ }
+  const aside = `${dir}.old-${Date.now()}`
+  try {
+    renameSync(dir, aside)
+    try { rmrf(aside) } catch { scheduleDeleteOnReboot(aside) }
+    return
+  } catch { /* taşıma da olmadı (dizin handle'ı açık) — son çare */ }
+  try { rmrf(dir) } catch { scheduleDeleteOnReboot(dir) }
 }
 
 function launchDropMedia(dir: string): void {
@@ -307,6 +335,12 @@ async function performInstall(
     ps.on('error', e => { clearInterval(tick); reject(e) })
   })
 
+  // Eski kurulumu temiz kaldır (çağıran zaten killDropMedia yaptı): kilitli/eski
+  // dosya üzerine yazma çakışmasını ve stale dosyaları önler. Kilitliyse
+  // forceRemoveDir yana taşır → her hâlükârda temiz dizine extract edilir.
+  forceRemoveDir(dir)
+  mkdirSync(dir, { recursive: true })
+
   onProgress(76, 'Dosyalar çıkartılıyor...')
   try {
     await extract()
@@ -342,16 +376,9 @@ async function performUninstall(onProgress: (pct: number, status: string) => voi
   await killDropMedia()
 
   onProgress(20, 'Dosyalar siliniyor...')
-  if (existsSync(activeDir)) {
-    try {
-      rmrf(activeDir)
-    } catch {
-      // Nadir: bir dosya hâlâ kilitli (örn. app.asar). Tekrar öldür, bekle,
-      // bir daha dene — yarım kaldırma (exe silinip app.asar kalması) önlenir.
-      await killDropMedia()
-      rmrf(activeDir)
-    }
-  }
+  // forceRemoveDir asla throw etmez: silemezse yana taşır / reboot'a planlar.
+  // Yarım kaldırma (exe silinip app.asar kalması) + ENOTEMPTY çökmesi biter.
+  forceRemoveDir(activeDir)
 
   onProgress(60, 'Kısayollar siliniyor...')
   const desk = join(process.env.USERPROFILE || 'C:\\Users\\Default', 'Desktop', 'DropMedia.lnk')

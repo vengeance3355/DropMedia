@@ -164,21 +164,45 @@ function authHelpMessage(): string {
   return 'Instagram oturumu doğrulanamadı. Tarayıcınızda instagram.com\'a giriş yaptığınızdan emin olun; gerekirse tarayıcıyı bir kez kapatıp açın.'
 }
 
+// topsearch ile user_id (pk) çöz. web_profile_info çoğu zaman 429 (rate-limit)
+// döndürüyor ve 24 saatlik story'lerde "tarayıcı aç-kapa" hatasına yol açıyordu
+// (canlı doğrulandı: web_profile_info=429, topsearch=200). Highlights bu yolu
+// kullanmaz — onların işleyişi değişmez.
+async function resolveUserIdViaSearch(username: string, cookies: CookieBundle): Promise<string | null> {
+  const r = await igApiGet(
+    `https://www.instagram.com/web/search/topsearch/?query=${encodeURIComponent(username)}`,
+    cookies
+  )
+  if (r.status !== 200) return null
+  try {
+    const data = JSON.parse(r.body) as { users?: Array<{ user?: { pk?: string | number; username?: string } }> }
+    const lower = username.toLowerCase()
+    const match = data.users?.find(u => (u.user?.username || '').toLowerCase() === lower)
+    const pk = match?.user?.pk
+    return pk != null ? String(pk) : null
+  } catch {
+    return null
+  }
+}
+
 async function resolveUserId(username: string, cookies: CookieBundle): Promise<string> {
+  // Önce topsearch (güvenilir), olmazsa web_profile_info'ya düş.
+  const viaSearch = await resolveUserIdViaSearch(username, cookies)
+  if (viaSearch) return viaSearch
+
   const r = await igApiGet(
     `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
     cookies
   )
+  if (r.status === 200) {
+    try {
+      const id = (JSON.parse(r.body) as { data?: { user?: { id?: string } } }).data?.user?.id
+      if (id) return id
+    } catch { /* aşağıdaki hataya düş */ }
+  }
   if (r.status === 401 || r.status === 403) throw new Error(authHelpMessage())
   if (r.status === 404) throw new Error(`@${username} bulunamadı. Kullanıcı adını kontrol edin.`)
-  try {
-    const data = JSON.parse(r.body) as { data?: { user?: { id?: string } } }
-    const id = data.data?.user?.id
-    if (!id) throw new Error('no-id')
-    return id
-  } catch {
-    throw new Error(`@${username} profil bilgisi alınamadı. ${authHelpMessage()}`)
-  }
+  throw new Error(`@${username} profil bilgisi alınamadı. ${authHelpMessage()}`)
 }
 
 interface RawCandidate { url?: string; width?: number; height?: number }

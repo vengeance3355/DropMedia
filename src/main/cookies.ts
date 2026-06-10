@@ -137,6 +137,7 @@ function getBrowserDefs(): BrowserDef[] {
 export function detectCookieSources(url?: string): CookieSource[] {
   const domains = domainsForUrl(url)
   const sources: CookieSource[] = []
+  const defaultProgId = readDefaultBrowserProgId()
 
   for (const def of getBrowserDefs()) {
     if (!existsSync(def.root)) continue
@@ -153,7 +154,7 @@ export function detectCookieSources(url?: string): CookieSource[] {
       const arg = cookieArgFor(def, profile)
       sources.push({
         id: arg,
-        label: profileLabel(def, profile),
+        label: profileLabel(def, profile, defaultProgId),
         browser: def.browser,
         profile: def.rootProfile ? undefined : profile,
         path: cookiePath,
@@ -247,9 +248,52 @@ function cookieArgFor(def: BrowserDef, profile: string): string {
   return `${def.browser}:${profile}`
 }
 
-function profileLabel(def: BrowserDef, profile: string): string {
-  if (def.rootProfile) return profile ? `${def.label} (${profile})` : def.label
-  return `${def.label} (${profile})`
+// OS varsayılan tarayıcısının ProgId'sini okur (Windows). Örn. Opera GX ->
+// "operagxstable", Chrome -> "chromehtml-...". Yalnızca etiketleme için.
+function readDefaultBrowserProgId(): string {
+  if (!IS_WIN) return ''
+  try {
+    const r = spawnSync('reg', ['query',
+      'HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice',
+      '/v', 'ProgId'], { encoding: 'utf8', timeout: 3000 })
+    // Değer boşluk içerebilir ("Opera GXStable") — satır sonuna kadar yakala,
+    // yoksa \S+ boşlukta kesilip yanlış eşleşir.
+    const m = (r.stdout || '').match(/ProgId\s+REG_SZ\s+(.+)/)
+    return m ? m[1].trim().toLowerCase().replace(/\s+/g, '') : ''
+  } catch {
+    return ''
+  }
+}
+
+// Bu tarayıcı tanımı OS varsayılanı mı? (Opera GX vs Opera ayrımı dahil)
+function isDefaultBrowserDef(def: BrowserDef, progId: string): boolean {
+  if (!progId) return false
+  const isGx = def.label.toLowerCase().includes('gx')
+  switch (def.browser) {
+    case 'opera':    return isGx ? progId.includes('operagx') : (progId.includes('opera') && !progId.includes('operagx'))
+    case 'chrome':   return progId.includes('chromehtml') || (progId.includes('chrome') && !progId.includes('chromium'))
+    case 'edge':     return progId.includes('msedge') || progId.includes('edgehtm')
+    case 'brave':    return progId.includes('brave')
+    case 'firefox':  return progId.includes('firefox')
+    case 'chromium': return progId.includes('chromium')
+    default:         return false
+  }
+}
+
+// Sade etiket: ana profil ("Default"/boş/firefox .default*) -> yalnız tarayıcı
+// adı (gereksiz "(Default)" gürültüsü yok); ikincil profil -> profil adıyla.
+function cleanProfileLabel(def: BrowserDef, profile: string): string {
+  if (def.kind === 'firefox') {
+    if (/\.default(-release)?$/i.test(profile) || /\.release$/i.test(profile)) return def.label
+    return `${def.label} (${profile.replace(/^[^.]*\./, '')})`
+  }
+  if (!profile || profile === 'Default') return def.label
+  return `${def.label} (${profile})` // "Profile 1" vb.
+}
+
+function profileLabel(def: BrowserDef, profile: string, defaultProgId = ''): string {
+  const base = cleanProfileLabel(def, profile)
+  return isDefaultBrowserDef(def, defaultProgId) ? `${base} (varsayılan)` : base
 }
 
 function hasDomainCookie(kind: BrowserDef['kind'], dbPath: string, domains: string[]): boolean {
