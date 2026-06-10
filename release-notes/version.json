@@ -1,4 +1,4 @@
 {
-  "version": "1.0.12",
-  "notes": "- Supabase yedekleme düzeltildi (her seferinde hata veriyordu)\n- Video indirme düzeltildi (Chrome çerez hatasında artık gerçekten çerezsiz deneniyor)\n- Opera GX çerezleri artık listede\n- \"Güncelle\" artık indirme ilerlemesini gösteriyor, takılırsa kaldığı yerden devam ediyor\n- Kararlılık: süreç zaman aşımları, yarım kurulum koruması, log kuyruğu iyileştirmeleri"
+  "version": "1.0.13",
+  "notes": "- Admin Seçenekleri geri geldi (release yönetimi uygulama içinde)\n- AI özet artık seçili/kurulu modeli kullanıyor (404 model hatası düzeltildi)\n- Çerez kaynaklı tekrar denemeler artık admin loguna yazılıyor\n- yt-dlp sürümü loglarda doğru görünüyor"
 }

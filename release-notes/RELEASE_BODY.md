@@ -144,3 +144,11 @@ Ana sürüm
 - Opera GX çerezleri artık listede
 - "Güncelle" artık indirme ilerlemesini gösteriyor, takılırsa kaldığı yerden devam ediyor
 - Kararlılık: süreç zaman aşımları, yarım kurulum koruması, log kuyruğu iyileştirmeleri
+
+---
+
+# 1.0.13
+- Admin Seçenekleri geri geldi (release yönetimi uygulama içinde)
+- AI özet artık seçili/kurulu modeli kullanıyor (404 model hatası düzeltildi)
+- Çerez kaynaklı tekrar denemeler artık admin loguna yazılıyor
+- yt-dlp sürümü loglarda doğru görünüyor
