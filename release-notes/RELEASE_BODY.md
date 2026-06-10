@@ -181,3 +181,8 @@ Installer kaldirma/guncelleme cokmesi (ENOTEMPTY) duzeltildi: surec tam kapanana
 
 # 1.0.18
 Installer artik DONMUYOR (tamamen async): kaldirma %20'de takilip 'yanit vermiyor'a dusmuyor; canli sayac + kayan parilti ile hep akici. Yarim kaldirmada bozuk/eski surum gosterme bitti. Duraklatinca indirme GERCEKTEN duruyor (yt-dlp surec agaci kapatiliyor, progress bar donuyor). Instagram GONDERILERI (/p/) artik story gibi carousel olarak aciliyor ve secip indirebiliyorsunuz. Indir sekmesinde sayi yerine nefes alan nokta.
+
+---
+
+# 1.0.19
+Kaldirma sirasinda AV-kilitli kalan dosya icin reboot temizligi planlanmissa, kullanici reboot'tan once yeniden kurarsa taze kurulumun silinmesi engellendi (kurulum o bekleyen gorevi iptal ediyor). Diger tum 1.0.18 duzeltmeleri dahil.
