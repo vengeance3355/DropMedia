@@ -176,3 +176,8 @@ Installer kaldirma/guncelleme cokmesi (ENOTEMPTY) duzeltildi: surec tam kapanana
 
 # 1.0.17
 24 saatlik Instagram story'leri (/stories/kullanici/) artik calisiyor (topsearch ile cozuldu). Installer kaldirma/guncelleme artik 3. parti kilit (Defender/Explorer) durumunda bile cokmuyor - silemezse yana tasiyip reboot'ta siliyor. Cookie ayarinda yalniz gercek varsayilan tarayici (varsayilan) etiketli; gereksiz (Default) gurultusu kaldirildi.
+
+---
+
+# 1.0.18
+Installer artik DONMUYOR (tamamen async): kaldirma %20'de takilip 'yanit vermiyor'a dusmuyor; canli sayac + kayan parilti ile hep akici. Yarim kaldirmada bozuk/eski surum gosterme bitti. Duraklatinca indirme GERCEKTEN duruyor (yt-dlp surec agaci kapatiliyor, progress bar donuyor). Instagram GONDERILERI (/p/) artik story gibi carousel olarak aciliyor ve secip indirebiliyorsunuz. Indir sekmesinde sayi yerine nefes alan nokta.
