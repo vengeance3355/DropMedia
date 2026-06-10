@@ -247,11 +247,28 @@ async function rmrfAsync(target: string, attempts = 15): Promise<boolean> {
   return !existsSync(target)
 }
 
+const RUNONCE_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce'
+
 // Kalan dizini bir sonraki oturum açılışında siler (kilit reboot'ta serbest kalır).
 async function scheduleDeleteOnReboot(target: string): Promise<void> {
-  await runQuiet('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce',
+  await runQuiet('reg', ['add', RUNONCE_KEY,
     '/v', `DropMediaCleanup${Date.now()}`, '/t', 'REG_SZ',
     '/d', `cmd /c rmdir /s /q "${target}"`, '/f'], 5000)
+}
+
+// KRİTİK: kaldırma sırasında AV-kilitli leftover için bu dizinin reboot'ta
+// silinmesi planlanmış olabilir. Kullanıcı reboot'tan ÖNCE yeniden kurarsa, o
+// RunOnce taze kurulumu silerdi. Kurulumdan sonra TAM bu dizini hedefleyen
+// (".old-*" değil) bekleyen RunOnce görevlerini iptal et.
+async function clearRebootCleanup(dir: string): Promise<void> {
+  const r = await runQuiet('reg', ['query', RUNONCE_KEY], 5000)
+  const needle = `"${dir}"`.toLowerCase() // kapanış tırnağı ".old-*"i hariç tutar
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const m = line.match(/^\s*(DropMediaCleanup\d+)\s+REG_SZ\s+(.+?)\s*$/)
+    if (m && m[2].toLowerCase().includes(needle)) {
+      await runQuiet('reg', ['delete', RUNONCE_KEY, '/v', m[1], '/f'], 5000)
+    }
+  }
 }
 
 type RemoveOutcome = 'removed' | 'scheduled' | 'leftover'
@@ -400,6 +417,9 @@ async function performInstall(
   // Kayıt
   onProgress(88, 'Sürüm bilgisi yazılıyor...')
   writeFileSync(join(dir, 'version.json'), JSON.stringify({ version }, null, 2))
+  // Bu dizini hedefleyen bekleyen reboot-silme görevini iptal et (taze kurulum
+  // reboot'ta kendini silmesin).
+  await clearRebootCleanup(dir)
 
   onProgress(92, 'Kayıt defteri güncelleniyor...')
   await writeRegistry(dir, version)
