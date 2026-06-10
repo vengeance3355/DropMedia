@@ -51,7 +51,7 @@ interface Props {
   }) => Promise<string>
 }
 
-export type ProductHubView = 'links' | 'watch' | 'library' | 'automation' | 'ai' | 'ai-chat' | 'account'
+export type ProductHubView = 'links' | 'watch' | 'automation' | 'ai' | 'ai-chat' | 'account'
 type SyncStatus = {
   configured: boolean
   signedIn: boolean
@@ -106,10 +106,6 @@ const VIEW_META: Record<ProductHubView, { title: string; description: string }> 
   watch: {
     title: 'Takip',
     description: 'YouTube, Instagram, X/Twitter ve playlist kaynaklarını izleyip yeni içerikleri yakalar.'
-  },
-  library: {
-    title: 'Kütüphane',
-    description: 'Tamamlanan indirmeler, local kayıtlar ve dosya konumu aksiyonları.'
   },
   automation: {
     title: 'Otomasyon',
@@ -1107,7 +1103,7 @@ export function ProductHub({
       <div className="grid gap-3 md:grid-cols-4">
         <Metric label="Linkler" value={state.inbox.length} sub={`${inboxReady} hazır`} />
         <Metric label="Takip" value={state.watchSources.length} sub={`${newWatchItems} yeni`} />
-        <Metric label="Kütüphane" value={completed.length + state.library.length} sub="local kayıt" />
+        <Metric label="İndirilenler" value={completed.length} sub="local kayıt" />
         <Metric label="AI" value={state.aiTools.filter(t => t.enabled).length} sub="opsiyonel local" />
       </div>
 
@@ -1713,7 +1709,7 @@ export function ProductHub({
               <div className="relative rounded-2xl border border-white/8 bg-[#16161A] p-2">
                 {mentionOpen && (
                   <div className="absolute bottom-full left-2 right-2 z-20 mb-2 max-h-60 overflow-y-auto rounded-xl border border-white/10 bg-[#16161A] p-1 shadow-2xl shadow-black/50 scrollbar-thin">
-                    <p className="px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-white/30">Kütüphane videoları</p>
+                    <p className="px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-white/30">İndirilen videolar</p>
                     {mentionItems.map(item => (
                       <button
                         key={item.id}
@@ -1802,21 +1798,6 @@ export function ProductHub({
         </div>
       )}
 
-      {view === 'library' && (
-        <DownloadQueue
-          items={historyItems}
-          onCancel={onCancel}
-          onPause={onPause}
-          onResume={onResume}
-          onRedownload={onRedownload}
-          onRemove={onRemove}
-          onClearCompleted={onClearCompleted}
-          onShowItemInFolder={onShowItemInFolder}
-          onConvertDone={onConvertDone}
-          onUrlDrop={onUseUrl}
-          onRepairMediaMetadata={onRepairMediaMetadata}
-        />
-      )}
     </div>
   )
 }

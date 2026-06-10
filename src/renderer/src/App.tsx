@@ -17,7 +17,7 @@ import { detectPlatform } from './utils/platform'
 import { isLikelyVideoUrl } from './utils/videoUrl'
 
 type Tab = 'queue' | 'history' | 'convert' | 'subtitle' | 'stats' | 'admin' | ProductHubView
-const PRODUCT_TABS: readonly ProductHubView[] = ['links', 'watch', 'library', 'automation', 'ai', 'ai-chat', 'account']
+const PRODUCT_TABS: readonly ProductHubView[] = ['links', 'watch', 'automation', 'ai', 'ai-chat', 'account']
 
 // Tamamlanma sesi (kısa bip — base64 data URL)
 const COMPLETION_BEEP = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
@@ -509,9 +509,6 @@ export default function App() {
               </SidebarItem>
               <SidebarItem active={activeTab === 'watch'} onClick={() => setActiveTab('watch')} icon={<WatchIcon />}>
                 Takip<BetaBadge />
-              </SidebarItem>
-              <SidebarItem active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<LibraryIcon />}>
-                Kütüphane
               </SidebarItem>
               <SidebarItem active={activeTab === 'automation'} onClick={() => setActiveTab('automation')} icon={<AutomationIcon />}>
                 Otomasyon<BetaBadge />
