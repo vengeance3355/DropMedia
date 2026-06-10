@@ -441,6 +441,28 @@ export interface AiJobStartRequest {
   targetLanguage?: string
 }
 
+export interface StoryItem {
+  id: string
+  index: number
+  username: string
+  isVideo: boolean
+  mediaUrl: string
+  thumbnail: string
+  duration: number
+  takenAt: number
+  width: number
+  height: number
+  pageUrl: string
+}
+
+export interface StoryReel {
+  kind: 'user' | 'highlight'
+  id: string
+  username: string
+  title: string
+  items: StoryItem[]
+}
+
 export interface ProductHubState {
   inbox: LinkInboxItem[]
   watchSources: WatchSource[]

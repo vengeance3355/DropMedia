@@ -15,7 +15,9 @@ import { setupProductHubHandlers, startProductWatchScheduler, stopProductWatchSc
 import { setupSyncHandlers } from './sync'
 import { setupAdminClientHandlers } from './adminClient'
 import { setupUpdater } from './updater'
-import { setupInstallerHandlers } from './installer'
+import { setupInstallerHandlers, maybeAutoUpdateYtDlp } from './installer'
+import { setupInstagramStoryHandlers } from './instagramStories'
+import { ensureWindowsAppIdentity, showNotification } from './windowsIdentity'
 import { snapshotAllCookies } from './cookies'
 import { flushPendingRemoteLogs, logActivity, logError, getLocalLogPath } from './logger'
 import { startAdminBridge } from './adminBridge'
@@ -229,6 +231,8 @@ process.on('unhandledRejection', (reason) => logError({ errorType: 'crash', erro
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.dropmedia.app')
+  // Toast bildirimlerinde "DropMedia" adı + logo göster (ham AUMID yerine).
+  void ensureWindowsAppIdentity()
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -239,7 +243,17 @@ app.whenReady().then(() => {
   // anlarını yakalayıp çerezleri kaydet (sonra tarayıcı açıkken de kullanılır).
   void snapshotAllCookies()
   setInterval(() => { void snapshotAllCookies() }, 4 * 60_000)
+
+  // yt-dlp'yi sessizce güncel tut: bayat binary = YouTube format/extractor
+  // kırılması. Açılışta (boştayken) + günde bir kez en son sürüme yükseltir.
+  setTimeout(() => { void maybeAutoUpdateYtDlp() }, 8000)
+  setInterval(() => { void maybeAutoUpdateYtDlp() }, 24 * 60 * 60_000)
   setupDownloadHandlers(ipcMain)
+  setupInstagramStoryHandlers(ipcMain)
+  // Toast'ları main process'ten gönder (logo + doğru başlık garantisi).
+  ipcMain.handle('notify', (_e, payload: { title?: string; body?: string }) => {
+    showNotification(payload?.title || 'DropMedia', payload?.body || '')
+  })
   setupAiHandlers(ipcMain)
   setupMediaJobHandlers(ipcMain)
   setupProductHubHandlers(ipcMain)

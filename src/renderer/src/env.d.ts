@@ -20,6 +20,7 @@ import {
   PreflightReport,
   ProductHubState,
   SmartProfile,
+  StoryReel,
   UpdateStatus,
   VideoInfo,
   WatchItem,
@@ -58,6 +59,8 @@ declare global {
       // İndirici
       fetchInfo:      (url: string)   => Promise<VideoInfo>
       fetchPlaylist:  (url: string)   => Promise<object[]>
+      fetchStories:   (url: string)   => Promise<StoryReel>
+      downloadStoryMedia: (req: { id: string; url: string; outputDir: string; filename: string; isVideo?: boolean; sourceUrl?: string; title?: string }) => Promise<{ started: boolean; error?: string }>
       startDownload:  (req: object)   => Promise<{ started: boolean; error?: string }>
       resumeDownload: (req: object)   => Promise<{ started: boolean; error?: string }>
       pauseDownload:  (id: string)    => Promise<boolean>
@@ -196,6 +199,15 @@ declare global {
 
       // Tray
       updateTrayCount: (n: number) => void
+
+      // Bildirim
+      notify: (title: string, body: string) => Promise<void>
+
+      // İndirme olay dinleyicileri (store + UI)
+      onDownloadUpdated?: (cb: (item: Partial<DownloadItem> & { id: string }) => void) => void
+      onDownloadItemsUpdated?: (cb: (items: DownloadItem[]) => void) => void
+      onFetchInfoLog?: (cb: (d: object) => void) => void
+      offFetchInfoLog?: () => void
     }
   }
 }

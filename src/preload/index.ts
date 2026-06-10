@@ -38,6 +38,8 @@ const api = {
   // İndirici
   fetchInfo:      (url: string)   => ipcRenderer.invoke('fetch-info', url),
   fetchPlaylist:  (url: string)   => ipcRenderer.invoke('fetch-playlist', url),
+  fetchStories:   (url: string)   => ipcRenderer.invoke('fetch-stories', url),
+  downloadStoryMedia: (req: object) => ipcRenderer.invoke('download-story-media', req),
   startDownload:  (req: object)   => ipcRenderer.invoke('start-download', req),
   resumeDownload: (req: object)   => ipcRenderer.invoke('resume-download', req),
   pauseDownload:  (id: string)    => ipcRenderer.invoke('pause-download', id),
@@ -206,7 +208,10 @@ const api = {
   onUpdateStatus:  (cb: (d: object) => void) => ipcRenderer.on('update-status', (_e, d) => cb(d)),
 
   // Tray
-  updateTrayCount: (n: number) => ipcRenderer.send('tray-update-count', n)
+  updateTrayCount: (n: number) => ipcRenderer.send('tray-update-count', n),
+
+  // Bildirim (main process → logo + doğru başlık)
+  notify: (title: string, body: string) => ipcRenderer.invoke('notify', { title, body })
 }
 
 if (process.contextIsolated) {

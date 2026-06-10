@@ -12,7 +12,7 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, createWriteStream } from 'fs'
 import { get as httpsGet } from 'https'
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 import { is } from '@electron-toolkit/utils'
 
@@ -180,12 +180,48 @@ function runPs(script: string): Promise<void> {
   })
 }
 
-function killDropMedia(): Promise<void> {
-  return new Promise(resolve => {
-    const p = spawn('taskkill', ['/F', '/IM', 'DropMedia.exe'], { stdio: 'pipe' })
-    p.on('close', () => setTimeout(resolve, 1500))
+function isDropMediaRunning(): boolean {
+  try {
+    const r = spawnSync('tasklist', ['/FI', 'IMAGENAME eq DropMedia.exe', '/NH'], { encoding: 'utf8', timeout: 5000 })
+    return (r.stdout || '').toLowerCase().includes('dropmedia.exe')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * DropMedia'yı GÜVENLE sonlandırır ve dosya kilitleri serbest kalana kadar bekler.
+ * Eski sürüm yalnızca 1 kez taskkill + sabit 1.5sn bekliyordu; süreç tam ölmeden
+ * dosya işlemine geçilince `resources\app.asar` kilitli kalıp recursive silme
+ * `ENOTEMPTY` ile patlıyordu (yarım kurulum/yarım kaldırma). Burada:
+ *  - tüm DropMedia.exe süreçleri ağaçça (/T) zorla (/F) öldürülür,
+ *  - tasklist ile süreç KAYBOLANA kadar beklenir (~15sn'ye kadar),
+ *  - Windows'un handle'ları geç bırakması için kısa bir settle eklenir.
+ */
+async function killDropMedia(): Promise<void> {
+  await new Promise<void>(resolve => {
+    const p = spawn('taskkill', ['/F', '/T', '/IM', 'DropMedia.exe'], { stdio: 'pipe' })
+    p.on('close', () => resolve())
     p.on('error', () => resolve())
   })
+  // Süreç tablosundan kaybolana kadar bekle (handle'lar serbest kalsın).
+  for (let i = 0; i < 30; i++) {
+    if (!isDropMediaRunning()) break
+    spawnSync('taskkill', ['/F', '/T', '/IM', 'DropMedia.exe'], { stdio: 'ignore', timeout: 5000 })
+    await new Promise(r => setTimeout(r, 500))
+  }
+  // Kilit serbest bırakma gecikmesi için son bir settle.
+  await new Promise(r => setTimeout(r, 1200))
+}
+
+/**
+ * Dizini/dosyayı kilit ve "boş değil" yarışlarına karşı dayanıklı siler.
+ * Node rmSync(maxRetries/retryDelay) EBUSY/ENOTEMPTY/EPERM'de otomatik tekrar
+ * eder — `ENOTEMPTY: rmdir` hatasının doğrudan çözümü.
+ */
+function rmrf(target: string): void {
+  if (!existsSync(target)) return
+  rmSync(target, { recursive: true, force: true, maxRetries: 15, retryDelay: 300 })
 }
 
 function launchDropMedia(dir: string): void {
@@ -203,12 +239,14 @@ async function createShortcuts(dir: string): Promise<void> {
   mkdirSync(smDir, { recursive: true })
   const sm = join(smDir, 'DropMedia.lnk')
   const s  = (v: string) => v.replace(/'/g, "''")
+  // IconLocation exe'nin gömülü ikonunu kullanır → kısayollar + (AUMID eşleşince)
+  // toast logosu DropMedia ikonu olur.
   await runPs(`
 $sh=New-Object -COM WScript.Shell
 $a=$sh.CreateShortcut('${s(desk)}')
-$a.TargetPath='${s(exe)}';$a.WorkingDirectory='${s(dir)}';$a.Save()
+$a.TargetPath='${s(exe)}';$a.WorkingDirectory='${s(dir)}';$a.IconLocation='${s(exe)},0';$a.Save()
 $b=$sh.CreateShortcut('${s(sm)}')
-$b.TargetPath='${s(exe)}';$b.WorkingDirectory='${s(dir)}';$b.Save()
+$b.TargetPath='${s(exe)}';$b.WorkingDirectory='${s(dir)}';$b.IconLocation='${s(exe)},0';$b.Save()
 `.trim())
 }
 
@@ -278,12 +316,12 @@ async function performInstall(
     await extract()
   }
 
-  if (!existsSync(join(dir, 'DropMedia.exe'))) {
-    throw new Error('Kurulum doğrulanamadı: DropMedia.exe çıkartılamadı. Tekrar deneyin.')
+  if (!existsSync(join(dir, 'DropMedia.exe')) || !existsSync(join(dir, 'resources', 'app.asar'))) {
+    throw new Error('Kurulum doğrulanamadı: gerekli dosyalar çıkartılamadı. Tekrar deneyin.')
   }
 
   // Temizle
-  try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+  try { rmrf(tmpDir) } catch {}
 
   // Kayıt
   onProgress(88, 'Sürüm bilgisi yazılıyor...')
@@ -304,15 +342,24 @@ async function performUninstall(onProgress: (pct: number, status: string) => voi
   await killDropMedia()
 
   onProgress(20, 'Dosyalar siliniyor...')
-  if (existsSync(activeDir)) rmSync(activeDir, { recursive: true, force: true })
+  if (existsSync(activeDir)) {
+    try {
+      rmrf(activeDir)
+    } catch {
+      // Nadir: bir dosya hâlâ kilitli (örn. app.asar). Tekrar öldür, bekle,
+      // bir daha dene — yarım kaldırma (exe silinip app.asar kalması) önlenir.
+      await killDropMedia()
+      rmrf(activeDir)
+    }
+  }
 
   onProgress(60, 'Kısayollar siliniyor...')
   const desk = join(process.env.USERPROFILE || 'C:\\Users\\Default', 'Desktop', 'DropMedia.lnk')
   const sm   = join(
     process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'DropMedia'
   )
-  try { if (existsSync(desk)) rmSync(desk) } catch {}
-  try { if (existsSync(sm))   rmSync(sm, { recursive: true, force: true }) } catch {}
+  try { rmrf(desk) } catch {}
+  try { rmrf(sm) } catch {}
 
   onProgress(80, 'Kayıt defteri temizleniyor...')
   await runCmd(`reg delete "${REG_KEY}" /f`)
@@ -337,11 +384,17 @@ function createWindow(): void {
       devTools: true
     }
   })
-  win.on('ready-to-show', () => {
-    win?.show()
-    win?.focus()
+  const reveal = () => {
+    if (!win || win.isDestroyed() || win.isVisible()) return
+    win.show()
+    win.focus()
     app.focus({ steal: true })
-  })
+  }
+  win.on('ready-to-show', reveal)
+  // Yedek: renderer beklenenden yavaş hazırlanırsa pencere yine de erken görünsün
+  // (NSIS extract + boot sonrası "installer geç açılıyor" algısını azaltır).
+  win.webContents.once('dom-ready', reveal)
+  setTimeout(reveal, 1200)
   win.webContents.on('did-fail-load', (_e, code, desc) => {
     console.error('Renderer yüklenemedi:', code, desc)
   })
@@ -369,6 +422,7 @@ app.whenReady().then(async () => {
   // kullanıcı "Güncelle"ye basınca installer açılır ve ilerlemeyi görür.
   if (IS_SILENT) {
     try {
+      if (getInstalledVersion()) await killDropMedia()
       const { version } = await performInstall(activeDir, (pct, status) => {
         process.stdout.write(`\r[${String(pct).padStart(3)}%] ${status}                 `)
       })

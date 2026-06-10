@@ -192,9 +192,50 @@
   .animate-slide-up { animation: slideUp 0.2s ease-out forwards; }
   .animate-fade-in  { animation: fadeIn 0.15s ease-out forwards; }
   .animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+
+  /* Yumuşak "nefes alan" işlem göstergesi: tek nokta, çift katmanlı
+     (çekirdek + dışa yayılan hale) smooth opacity/scale salınımı. */
+  .breathe-dot {
+    position: relative;
+    display: inline-flex;
+    height: 8px;
+    width: 8px;
+    flex: none;
+  }
+  .breathe-dot::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: #a78bfa;
+    animation: breathe-halo 2.4s ease-in-out infinite;
+  }
+  .breathe-dot::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 9999px;
+    background: #8b5cf6;
+    box-shadow: 0 0 8px rgba(139, 92, 246, 0.7);
+    animation: breathe-core 2.4s ease-in-out infinite;
+  }
 }
 
 @keyframes pulse-glow {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+@keyframes breathe-halo {
+  0%, 100% { transform: scale(0.7); opacity: 0.15; }
+  50%      { transform: scale(1.6); opacity: 0.45; }
+}
+
+@keyframes breathe-core {
+  0%, 100% { opacity: 0.55; transform: scale(0.85); }
+  50%      { opacity: 1;    transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .breathe-dot::before, .breathe-dot::after { animation: none; }
 }

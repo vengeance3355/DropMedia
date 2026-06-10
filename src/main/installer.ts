@@ -17,6 +17,12 @@ function getMainWindow(): BrowserWindow | undefined {
   return BrowserWindow.getAllWindows()[0]
 }
 
+// İndirici (downloader) aktif iş varken auto-update'i ertelemek için kanca.
+let ytDlpBusyCheck: (() => boolean) | null = null
+export function setYtDlpBusyCheck(fn: () => boolean): void {
+  ytDlpBusyCheck = fn
+}
+
 function send(channel: string, data: object) {
   getMainWindow()?.webContents.send(channel, data)
 }
@@ -122,6 +128,74 @@ export async function updateYtDlp(): Promise<{ success: boolean; version?: strin
     })
     rmSync(tempDir, { recursive: true, force: true })
     return { success: false, error: err }
+  }
+}
+
+// ── yt-dlp otomatik güncelleme (sessiz, arka plan) ────────────────────────────
+//
+// Bayat yt-dlp = YouTube'da "requested format is not available" / extractor
+// kırılması: platformlar sık değişir, yt-dlp haftalık güncellenir. Kullanıcıya
+// hiçbir eylem yaptırmadan, açılışta (ve günde bir) en son sürüme yükseltir.
+// Aktif indirme varken ertelenir (çalışan binary'i değiştirmek riskli).
+
+function latestYtDlpTag(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const req = httpsGet(
+      'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest',
+      { headers: { 'User-Agent': 'DropMedia/1.0', Accept: 'application/vnd.github+json' } },
+      (res) => {
+        if (res.statusCode !== 200) { res.resume(); resolve(null); return }
+        let data = ''
+        res.on('data', (c: Buffer) => (data += c.toString()))
+        res.on('end', () => {
+          try { resolve(String(JSON.parse(data).tag_name || '') || null) } catch { resolve(null) }
+        })
+        res.on('error', () => resolve(null))
+      }
+    )
+    req.on('error', () => resolve(null))
+    req.setTimeout(10_000, () => req.destroy())
+  })
+}
+
+let autoUpdateRunning = false
+
+export async function maybeAutoUpdateYtDlp(): Promise<void> {
+  if (autoUpdateRunning) return
+  autoUpdateRunning = true
+  try {
+    const local = join(getBinDir(), getYtDlpBin())
+    // Yerel binary yoksa ilk kurulumu downloader/installer ayrı yapar; burada
+    // yalnızca güncelleme yapılır.
+    if (!existsSync(local)) return
+    if (ytDlpBusyCheck?.()) return
+
+    const installed = await getVersion(local)
+    const latest = await latestYtDlpTag()
+    if (!latest || !installed || installed === 'unknown') return
+    if (installed === latest) return
+
+    // Sessiz indirme: progress UI'sı yok (kullanıcı fark etmeden güncellenir).
+    const tempDir  = mkdtempSync(join(tmpdir(), 'dropmedia-ytdlp-auto-'))
+    const tempFile = join(tempDir, getYtDlpBin())
+    const url = IS_WIN
+      ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+      : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp'
+    try {
+      await downloadWithProgress(url, tempFile, '__noop-ytdlp-auto')
+      const ver = await getVersion(tempFile)
+      if (ver && ver !== 'unknown' && !ytDlpBusyCheck?.()) {
+        copyFileSync(tempFile, local)
+        send('ytdlp-update-progress', { status: 'auto-updated', version: ver })
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  } catch {
+    // Sessiz: auto-update başarısızlığı kullanıcıyı ilgilendirmez (manuel
+    // güncelleme Ayarlar'dan hâlâ mümkün).
+  } finally {
+    autoUpdateRunning = false
   }
 }
 

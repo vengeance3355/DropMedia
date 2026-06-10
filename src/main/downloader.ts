@@ -9,6 +9,7 @@ import { logError, logStat, logDownload } from './logger'
 import { detectCookieSources, resolveCookieBrowser, cookieSnapshotMissingLabel } from './cookies'
 import { generateThumbnail, downloadRemoteThumbnail } from './thumbnailCache'
 import { resolveYtDlpPath, resolveFfmpegPath, resolveFfprobePath, getYtDlpBin } from './platform'
+import { maybeAutoUpdateYtDlp, setYtDlpBusyCheck } from './installer'
 
 const DEBUG_LOG = join(tmpdir(), 'dropmedia_debug.log')
 function dbg(msg: string) {
@@ -21,6 +22,14 @@ const activeDownloads = new Map<string, ReturnType<typeof spawn>>()
 const activeDownloadKeys = new Map<string, string>()
 const pausingDownloads = new Set<string>()
 const cancellingDownloads = new Set<string>()
+let activeFetchCount = 0
+
+// installer auto-update'in çalışan yt-dlp binary'sini değiştirmemesi için:
+// indirme veya bilgi-çekme aktifken meşgul say.
+export function isYtDlpBusy(): boolean {
+  return activeDownloads.size > 0 || activeFetchCount > 0
+}
+setYtDlpBusyCheck(isYtDlpBusy)
 
 // ── Yol yönetimi ─────────────────────────────────────────────────────────────
 
@@ -112,6 +121,28 @@ function isTwitterUrl(url: string): boolean {
   return u.includes('twitter.com') || u.includes('x.com')
 }
 
+function isYoutubeUrl(url: string): boolean {
+  const u = url.toLowerCase()
+  return u.includes('youtube.com') || u.includes('youtu.be')
+}
+
+// YouTube'da seçilen player client'ı o an hiç format döndürmediğinde alınan
+// hata. Format merdiveni (.../best) zaten varken bu hata = client/extraction
+// sorunu; çözüm farklı kaliteyi değil, farklı player client'ları denemek.
+function isYoutubeFormatError(text: string): boolean {
+  const t = text.toLowerCase()
+  return t.includes('requested format is not available') ||
+    t.includes('no video formats') ||
+    t.includes('unable to extract') ||
+    t.includes('player response') ||
+    t.includes('failed to extract any player response')
+}
+
+// Açılışta seçilen player client değişebilir; geniş bir set vererek biri boş
+// dönerse diğeri kapatır. tv + web_safari + android + web: PO-token gerektirmeden
+// en geniş format kapsaması (canlı doğrulandı).
+const YT_FALLBACK_CLIENTS = 'youtube:player_client=tv,web_safari,android,web'
+
 function isAuthenticationRequiredError(text: string): boolean {
   return text.includes('need to log in') ||
     text.includes('login required') ||
@@ -184,6 +215,7 @@ export function buildAccessArgs(url: string, opts: { useTor?: boolean; cookieBro
 // ── Format builder ────────────────────────────────────────────────────────────
 
 function getExpectedStreamCount(opts: DownloadOptions): number {
+  if (opts.singleStream) return 1 // direkt medya URL'si (örn. story mp4) — tek akış
   if (['mp3', 'm4a', 'aac'].includes(opts.format)) return 1
   if (!hasFfmpeg()) return 1
   return 2 // bestvideo+bestaudio → video stream + audio stream
@@ -197,6 +229,9 @@ function buildArgs(url: string, opts: DownloadOptions): string[] {
   const args: string[] = ['--ignore-config', '--newline', '--no-warnings', '--no-playlist', '--continue', '--retries', '3', '--fragment-retries', '3', '-o', output]
   args.push(...buildAccessArgs(url, { useTor, cookieBrowser }))
 
+  // YouTube format/extraction hatası sonrası geniş player client seti dene.
+  if (opts.ytExtraClients && isYoutubeUrl(url)) args.push('--extractor-args', YT_FALLBACK_CLIENTS)
+
   // Hız limiti
   if (speedLimit && speedLimit > 0) args.push('--limit-rate', `${speedLimit}M`)
 
@@ -207,6 +242,14 @@ function buildArgs(url: string, opts: DownloadOptions): string[] {
   if (subtitles) {
     args.push('--write-subs', '--write-auto-subs', '--sub-langs', 'tr,en')
     if (embedSubs && ffmpeg) args.push('--embed-subs')
+  }
+
+  // Direkt medya URL'si (story mp4 CDN linki gibi): format merdiveni uygulanmaz,
+  // tek akış olduğu gibi indirilir; merge gerekmez.
+  if (opts.singleStream) {
+    args.push('-f', 'best/bestvideo+bestaudio')
+    args.push(url)
+    return args
   }
 
   const isAudio = ['mp3', 'm4a', 'aac'].includes(format)
@@ -236,6 +279,15 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
 
   // Tekil video bilgisi
   ipcMain.handle('fetch-info', async (_e, url: string) => {
+    activeFetchCount++
+    try {
+      return await fetchInfoInternal(url)
+    } finally {
+      activeFetchCount--
+    }
+  })
+
+  async function fetchInfoInternal(url: string) {
     const cached = getCache(url)
     if (cached) return await withInstagramThumbnailPath(url, cached)
 
@@ -245,6 +297,17 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
     const args = [...baseArgs, ...accessArgs, url]
     let result = await runProcess(bin, args)
     let usedArgs = args
+
+    // YouTube format/extraction hatası → geniş player client seti ile tekrar
+    // (cookie'yi düşürmeden). Hata genelde o anki tek client'ın boş dönmesi.
+    if (result.code !== 0 && isYoutubeUrl(url) && isYoutubeFormatError((result.stderr + result.stdout).toLowerCase())) {
+      const clientArgs = [...baseArgs, ...accessArgs, '--extractor-args', YT_FALLBACK_CLIENTS, url]
+      const retry = await runProcess(bin, clientArgs)
+      if (retry.code === 0) {
+        result = retry
+        usedArgs = clientArgs
+      }
+    }
 
     // Cookie'li deneme format hatası verirse cookiesiz yeniden dene
     if (result.code !== 0 && accessArgs.includes('--cookies-from-browser')) {
@@ -264,7 +327,8 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
         })
         // 'disabled' şart: '' resolveCookieBrowser'da AUTO'ya düşer ve yine
         // aynı cookie'li argümanı üretir (DPAPI hatası sonsuza dek tekrarlardı).
-        const noCookieArgs = [...baseArgs, ...buildAccessArgs(url, { cookieBrowser: 'disabled' }), url]
+        const ytClient = isYoutubeUrl(url) && isYoutubeFormatError(lower) ? ['--extractor-args', YT_FALLBACK_CLIENTS] : []
+        const noCookieArgs = [...baseArgs, ...buildAccessArgs(url, { cookieBrowser: 'disabled' }), ...ytClient, url]
         const retry = await runProcess(bin, noCookieArgs)
         if (retry.code === 0) {
           result = retry
@@ -312,7 +376,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
       await logError({ errorType: 'fetch', errorMessage: 'Video bilgisi işlenemedi.', url, operation: 'fetch-info-parse', command: formatCommand(bin, usedArgs), stackTrace: e.stack, stdout: result.stdout })
       throw new Error('Video bilgisi işlenemedi.')
     }
-  })
+  }
 
   // Playlist bilgisi
   ipcMain.handle('fetch-playlist', async (_e, url: string) => {
@@ -404,7 +468,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('detect-cookie-sources', (_e, url?: string) => detectCookieSources(url))
 }
 
-type DownloadMode = 'start' | 'resume' | 'retry-no-subs' | 'retry-no-cookies'
+type DownloadMode = 'start' | 'resume' | 'retry-no-subs' | 'retry-yt-clients' | 'retry-no-cookies'
 
 function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWithoutSubtitles = false): { started: boolean; error?: string } {
   const { id, url, format } = opts
@@ -521,23 +585,42 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
 
     const success = code === 0
     const platform = detectPlatformName(url)
+    const lowerOut = (stderr + stdoutTail).toLowerCase()
 
-    // Cookie'li indirme format hatası verirse cookiesiz yeniden dene
+    // Bekleyen iptal/duraklatı, yeniden denemeden önce onurlandıran yardımcı —
+    // aynı id'yi kullandığımız için yeni sürece sızıp görünmez devam etmesin.
+    const honorPendingControls = (): boolean => {
+      if (cancellingDownloads.delete(id)) {
+        getMainWindow()?.webContents.send('download-complete', { id, success: false, code, cancelled: true, error: 'İndirme iptal edildi.' })
+        return true
+      }
+      if (pausingDownloads.delete(id)) {
+        getMainWindow()?.webContents.send('download-paused', { id })
+        return true
+      }
+      return false
+    }
+
+    // ── Adım 1: YouTube format/extraction hatası → geniş player client seti ──
+    // Cookie'yi DÜŞÜRMEDEN önce dene: hata genelde o anki tek client'ın boş
+    // dönmesinden kaynaklanır; farklı client'lar formatları geri getirir.
+    if (!success && isYoutubeUrl(url) && !opts.ytExtraClients &&
+        mode !== 'retry-yt-clients' && mode !== 'retry-no-cookies' &&
+        isYoutubeFormatError(lowerOut)) {
+      dbg(`YT_FORMAT_ERROR — retrying with fallback player clients`)
+      if (honorPendingControls()) return
+      getMainWindow()?.webContents.send('download-log', { id, msg: 'YouTube formatları yenileniyor (alternatif oynatıcılar deneniyor)…' })
+      startDownloadProcess({ ...opts, ytExtraClients: true }, 'retry-yt-clients')
+      return
+    }
+
+    // ── Adım 2: Cookie kaynaklı / format hatası → cookiesiz tekrar ──
+    // (YouTube'da multi-client de denenmiş olur; ytExtraClients sticky kalır.)
     if (!success && mode !== 'retry-no-cookies' && args.includes('--cookies-from-browser')) {
-      const lower = (stderr + stdoutTail).toLowerCase()
-      if ((!isAuthenticationRequiredError(lower) || isCookieExtractionError(lower)) &&
-          (lower.includes('no video formats') || lower.includes('requested format is not available') || isCookieExtractionError(lower))) {
+      if ((!isAuthenticationRequiredError(lowerOut) || isCookieExtractionError(lowerOut)) &&
+          (lowerOut.includes('no video formats') || lowerOut.includes('requested format is not available') || isCookieExtractionError(lowerOut))) {
         dbg(`FORMAT_ERROR_WITH_COOKIES — retrying without cookies`)
-        // Yeniden denemeden önce bekleyen iptal/duraklatı onurlandır — aynı id'yi
-        // kullandığımız için iptal yeni sürece sızıp görünmez şekilde devam etmesin.
-        if (cancellingDownloads.delete(id)) {
-          getMainWindow()?.webContents.send('download-complete', { id, success: false, code, cancelled: true, error: 'İndirme iptal edildi.' })
-          return
-        }
-        if (pausingDownloads.delete(id)) {
-          getMainWindow()?.webContents.send('download-paused', { id })
-          return
-        }
+        if (honorPendingControls()) return
         getMainWindow()?.webContents.send('download-log', { id, msg: 'Cookie kaynaklı hata alındı, cookiesiz tekrar deneniyor…' })
         // Retry'ı admin loguna yaz + okunamayan kaynağı oturum boyu kara listele.
         noteCookieRetry({
@@ -545,7 +628,7 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
           url,
           cookieArg: cookieArgOf(args),
           stderr,
-          cookieError: isCookieExtractionError(lower)
+          cookieError: isCookieExtractionError(lowerOut)
         })
         // 'disabled' şart: '' AUTO'ya düşüp yine cookie eklerdi.
         startDownloadProcess({ ...opts, cookieBrowser: 'disabled' }, 'retry-no-cookies')
@@ -654,7 +737,11 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
         errorMessage: error ?? 'İndirme tamamlanamadı.',
         url,
         format,
-        operation: mode === 'resume' ? 'download-resume' : mode === 'retry-no-subs' ? 'download-retry-no-subs' : 'download',
+        operation: mode === 'resume' ? 'download-resume'
+          : mode === 'retry-no-subs' ? 'download-retry-no-subs'
+          : mode === 'retry-yt-clients' ? 'download-retry-yt-clients'
+          : mode === 'retry-no-cookies' ? 'download-retry-no-cookies'
+          : 'download',
         command: formatCommand(bin, args),
         exitCode: code,
         stderr,
@@ -941,4 +1028,6 @@ interface DownloadOptions {
   embedSubs?: boolean
   cookieBrowser?: string
   thumbnail?: string
+  singleStream?: boolean
+  ytExtraClients?: boolean
 }

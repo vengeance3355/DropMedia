@@ -45,6 +45,20 @@ function httpsGetJson(url: string): Promise<unknown> {
   })
 }
 
+// Semver karşılaştırması: a, b'den büyük mü? (yalnızca x.y.z sayısal kısımları;
+// pre-release etiketleri yok sayılır — basit ve yeterli.)
+function isNewerVersion(a: string, b: string): boolean {
+  const parse = (v: string) => v.replace(/^v/i, '').split('-')[0].split('.').map(n => parseInt(n, 10) || 0)
+  const pa = parse(a)
+  const pb = parse(b)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const da = pa[i] ?? 0
+    const db = pb[i] ?? 0
+    if (da !== db) return da > db
+  }
+  return false
+}
+
 async function fetchLatestRelease(): Promise<ReleaseInfo | null> {
   try {
     // tag 'stable' sabit olduğundan sürüm karşılaştırması version.json'dan yapılır.
@@ -54,7 +68,10 @@ async function fetchLatestRelease(): Promise<ReleaseInfo | null> {
     if (!latestVersion) return null
 
     const currentVersion = app.getVersion()
-    if (latestVersion === currentVersion) return null
+    // YALNIZCA uzak sürüm yerelden BÜYÜKSE güncelleme öner. Eşitlik kontrolü
+    // yetmez: yerelde 1.0.16 kuruluyken CDN 1.0.15 verirse geri-yönlü "hayalet"
+    // güncelleme banner'ı çıkardı.
+    if (!isNewerVersion(latestVersion, currentVersion)) return null
 
     return { version: latestVersion, notes: String(verData.notes || '') }
   } catch {
@@ -274,7 +291,12 @@ export function setupUpdater(window: BrowserWindow): void {
       stdio: 'ignore'
     }).unref()
 
-    app.quit()
+    // Hemen quit etme: installer süreci NSIS extract + Electron boot ile birkaç
+    // saniyede görünür olur; bu sürede DropMedia açık kalsın ki kullanıcı boş
+    // ekrana bakmasın ("installer geç açılıyor" algısı). Installer zaten kendi
+    // taskkill'iyle DropMedia'yı kapatır; biz de yedek olarak kısa süre sonra
+    // çıkıyoruz.
+    setTimeout(() => app.quit(), 2500)
   })
 
   // Uygulama açılışında otomatik kontrol

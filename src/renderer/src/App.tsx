@@ -9,12 +9,13 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { MediaListItem } from './components/MediaListItem'
 import { ProductHub, type ProductHubView } from './components/ProductHub'
 import { AdminPanel } from './components/AdminPanel'
+import { StoryViewer } from './components/StoryViewer'
 import { useDownloadStore } from './store/downloadStore'
 import { useMediaJobs } from './store/mediaJobStore'
 import type { ConvertedRecord, SubtitleRecord } from './store/mediaJobStore'
-import { DEFAULT_SUBTITLE_STYLE, DownloadItem, PostProcessRecipe, ProductHubState, VideoInfo } from './types'
+import { DEFAULT_SUBTITLE_STYLE, DownloadItem, PostProcessRecipe, ProductHubState, StoryItem, StoryReel, VideoInfo } from './types'
 import { detectPlatform } from './utils/platform'
-import { isLikelyVideoUrl } from './utils/videoUrl'
+import { isLikelyVideoUrl, isInstagramStoriesUrl } from './utils/videoUrl'
 
 type Tab = 'queue' | 'history' | 'convert' | 'subtitle' | 'stats' | 'admin' | ProductHubView
 const PRODUCT_TABS: readonly ProductHubView[] = ['links', 'watch', 'automation', 'ai', 'ai-chat', 'account']
@@ -67,11 +68,18 @@ export default function App() {
         return
       }
 
+      // Story fotoğrafı: indirilen dosyanın kendisi görsel → küçük resim yap.
+      const completedItem = itemsRef.current.find(i => i.id === d.id)
+      const photoThumb = d.success && !d.thumbnailPath && d.outputPath && completedItem?.selectedFormat === 'story-photo'
+        ? d.outputPath
+        : undefined
+
       updateStatus(d.id, d.success ? 'completed' : 'error', {
         error: d.success ? undefined : (d.error || 'İndirme tamamlanamadı. Ayrıntılar admin loguna kaydedildi.'),
         outputPath: d.outputPath,
         outputDir: d.outputDir,
-        ...(d.thumbnailPath ? { thumbnailPath: d.thumbnailPath, localThumbnailPath: d.thumbnailPath } : {}),
+        ...(d.thumbnailPath ? { thumbnailPath: d.thumbnailPath, localThumbnailPath: d.thumbnailPath }
+          : photoThumb ? { thumbnailPath: photoThumb, localThumbnailPath: photoThumb } : {}),
         ...(d.duration !== undefined ? { duration: d.duration } : {}),
         completedAt: d.success ? Date.now() : undefined,
         speed: '',
@@ -84,11 +92,11 @@ export default function App() {
         audioRef.current.play().catch(() => {})
       }
 
-      // Sistem bildirimi
+      // Sistem bildirimi — main process üzerinden (logo + "DropMedia" başlığı).
       const notifEnabled = await window.api.getSetting('showNotifications')
-      if (d.success && notifEnabled && 'Notification' in window && Notification.permission === 'granted') {
+      if (d.success && notifEnabled) {
         const item = itemsRef.current.find(i => i.id === d.id)
-        new Notification('DropMedia', { body: `İndirme tamamlandı: ${item?.videoInfo?.title ?? ''}` })
+        window.api.notify('DropMedia', `İndirme tamamlandı: ${item?.videoInfo?.title ?? ''}`)
       }
 
       if (d.success) {
@@ -127,18 +135,78 @@ export default function App() {
     window.api.updateTrayCount(activeCount)
   }, [activeCount])
 
-  // Bildirim izni iste
-  useEffect(() => {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission()
-    }
-  }, [])
 
   // Clipboard toast
   const [clipboardToast, setClipboardToast] = useState<{ url: string; id: string } | null>(null)
 
+  // ── Instagram story görüntüleyici ──────────────────────────────────────────
+  const [storyReel, setStoryReel] = useState<StoryReel | null>(null)
+  const [storyLoading, setStoryLoading] = useState(false)
+  const [storyError, setStoryError] = useState<string | null>(null)
+  const [requestedStoryIds, setRequestedStoryIds] = useState<Set<string>>(new Set())
+
+  async function openStories(url: string) {
+    setStoryError(null)
+    setStoryLoading(true)
+    try {
+      const reel = await window.api.fetchStories(url)
+      setRequestedStoryIds(new Set())
+      setStoryReel(reel)
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e)
+      setStoryError(raw.replace(/^Error invoking remote method '[^']+':\s*/i, '').replace(/^Error:\s*/i, '').trim())
+      setTimeout(() => setStoryError(null), 9000)
+    } finally {
+      setStoryLoading(false)
+    }
+  }
+
+  async function downloadStoryItem(item: StoryItem, reel: StoryReel) {
+    const dir = downloadDir || await window.api.getDownloadsFolder()
+    const username = reel.username || 'instagram'
+    const filename = `${username}_story_${item.index + 1}`
+    const title = `@${username} story ${item.index + 1}`
+    const videoInfo: VideoInfo = {
+      id: item.id,
+      title,
+      thumbnail: item.thumbnail || item.mediaUrl,
+      remoteThumbnail: item.thumbnail || item.mediaUrl,
+      duration: Math.round(item.duration || 0),
+      uploader: `@${username}`,
+      url: item.pageUrl,
+      platform: 'instagram',
+      formats: []
+    }
+    const id = addItem(item.pageUrl, item.isVideo ? 'story-video' : 'story-photo', videoInfo, {
+      status: 'downloading', outputDir: dir, progress: 0, thumbnailUrl: item.thumbnail || undefined
+    })
+    setRequestedStoryIds(prev => new Set(prev).add(item.id))
+    setActiveTab('queue')
+    try {
+      const res = await window.api.downloadStoryMedia({
+        id, url: item.mediaUrl, outputDir: dir, filename, isVideo: item.isVideo, sourceUrl: item.pageUrl, title
+      })
+      if (!res.started) updateStatus(id, 'error', { error: res.error || 'Story indirilemedi.' })
+    } catch {
+      updateStatus(id, 'error', { error: 'Story indirilemedi.' })
+    }
+  }
+
+  async function downloadStoryItems(itemsToGet: StoryItem[], reel: StoryReel) {
+    for (const item of itemsToGet) {
+      if (requestedStoryIds.has(item.id)) continue
+      await downloadStoryItem(item, reel)
+    }
+  }
+
   function handleDetectedUrl(rawUrl: string) {
     const url = rawUrl.trim()
+    // Story/highlight bağlantısı: kuyruğa ekleme — uygulama içi görüntüleyici aç.
+    if (isInstagramStoriesUrl(url)) {
+      setClipboardToast(null)
+      void openStories(url)
+      return
+    }
     if (!url || !isLikelyVideoUrl(url)) return
     const key = normalizeUrlForUi(url)
     const lastSeen = recentClipboardUrlsRef.current.get(key) ?? 0
@@ -155,6 +223,7 @@ export default function App() {
 
   async function handleShortcutDownload(rawUrl: string) {
     const url = rawUrl.trim()
+    if (isInstagramStoriesUrl(url)) { void openStories(url); return }
     if (!url || !isLikelyVideoUrl(url)) return
     const key = normalizeUrlForUi(url)
     if (itemsRef.current.some(i =>
@@ -502,7 +571,9 @@ export default function App() {
           <aside className="flex w-[220px] shrink-0 flex-col border-r border-white/[0.04] bg-[#0F0F12]/95 px-3 py-4">
             <nav className="flex-1 overflow-y-auto flex flex-col gap-1 min-h-0 pb-2">
               <SidebarItem active={activeTab === 'queue'} onClick={() => setActiveTab('queue')} icon={<DownloadIcon />}>
-                İndir{queueItems.length > 0 && <Badge>{queueItems.length}</Badge>}{activeCount > 0 && <ActiveDot />}
+                İndir{activeCount > 0
+                  ? <ActiveDot />
+                  : queueItems.length > 0 && <Badge>{queueItems.length}</Badge>}
               </SidebarItem>
               <SidebarItem active={activeTab === 'links'} onClick={() => setActiveTab('links')} icon={<LinkIcon />}>
                 Linkler
@@ -526,10 +597,10 @@ export default function App() {
                 Geçmiş{historyItems.length > 0 && <Badge muted>{historyItems.length}</Badge>}
               </SidebarItem>
               <SidebarItem active={activeTab === 'convert'} onClick={() => setActiveTab('convert')} icon={<RefreshIcon />}>
-                Dönüştür
+                Dönüştür{media.convertActive && <ActiveDot />}
               </SidebarItem>
               <SidebarItem active={activeTab === 'subtitle'} onClick={() => setActiveTab('subtitle')} icon={<SubtitleIcon />}>
-                Altyazı{media.subtitleActive && <span className="ml-1 h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse inline-block" />}
+                Altyazı{media.subtitleActive && <ActiveDot />}
               </SidebarItem>
               <SidebarItem active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} icon={<ChartIcon />}>
                 İstatistik
@@ -556,6 +627,7 @@ export default function App() {
             <div className="border-b border-white/[0.04] px-6 py-5">
               <UrlInput
                 onDownload={handleDownload}
+                onOpenStories={openStories}
                 incomingUrl={clipboardRequest}
                 onIncomingUrlHandled={() => setClipboardRequest(null)}
               />
@@ -626,6 +698,32 @@ export default function App() {
           </div>
 
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+
+      {/* Instagram story görüntüleyici */}
+      {storyLoading && (
+        <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-3 bg-black/80 backdrop-blur-md">
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-violet-400" />
+          <p className="text-sm text-white/70">Story'ler yükleniyor…</p>
+        </div>
+      )}
+      {storyError && (
+        <div className="fixed left-1/2 top-14 z-[70] w-[420px] max-w-[90vw] -translate-x-1/2 rounded-xl border border-red-500/30 bg-[#16161A]/95 px-4 py-3 shadow-2xl shadow-black/40 backdrop-blur-xl animate-slide-up">
+          <div className="flex items-start gap-2.5">
+            <svg className="mt-0.5 shrink-0 text-red-400" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            <p className="flex-1 text-xs leading-relaxed text-white/80">{storyError}</p>
+            <button onClick={() => setStoryError(null)} className="text-white/40 hover:text-white">✕</button>
+          </div>
+        </div>
+      )}
+      {storyReel && (
+        <StoryViewer
+          reel={storyReel}
+          requestedIds={requestedStoryIds}
+          onDownloadItem={(item) => downloadStoryItem(item, storyReel)}
+          onDownloadMany={(itemsToGet) => downloadStoryItems(itemsToGet, storyReel)}
+          onClose={() => setStoryReel(null)}
+        />
+      )}
     </>
   )
 }
@@ -853,14 +951,9 @@ function SidebarItem({ active, onClick, icon, children }: { active: boolean; onC
   )
 }
 
-// Aktif işlem göstergesi: yazı yok, sadece nefes alan nokta.
+// Aktif işlem göstergesi: sayı yok, sadece yumuşak nefes alan nokta.
 function ActiveDot() {
-  return (
-    <span className="relative ml-1.5 flex h-2 w-2">
-      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-violet-400 opacity-60" />
-      <span className="relative inline-flex h-2 w-2 rounded-full bg-violet-400" />
-    </span>
-  )
+  return <span className="breathe-dot ml-2" aria-label="İşlem sürüyor" title="İşlem sürüyor" />
 }
 
 function BetaBadge() {

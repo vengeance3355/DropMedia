@@ -45,3 +45,23 @@ export function isLikelyVideoUrl(value: string): boolean {
 
   return false
 }
+
+/**
+ * Instagram story/highlight bağlantısı mı? (uygulama içi story görüntüleyiciyi
+ * tetikler). Tek bir story/post/reel değil — kullanıcı story akışı veya
+ * highlight: /stories/<kullanıcı>/ veya /stories/highlights/<id>/
+ */
+export function isInstagramStoriesUrl(value: string): boolean {
+  try {
+    const url = new URL(value.trim())
+    const host = url.hostname.replace(/^www\./, '').toLowerCase()
+    if (host !== 'instagram.com' && !host.endsWith('.instagram.com')) return false
+    const parts = url.pathname.split('/').filter(Boolean)
+    if (parts[0] !== 'stories' || parts.length < 2) return false
+    // /stories/highlights/<id> ya da /stories/<kullanıcı>[/...]
+    if (parts[1] === 'highlights') return /^\d+$/.test((parts[2] ?? '').replace(/\D/g, '')) && !!parts[2]
+    return true
+  } catch {
+    return false
+  }
+}

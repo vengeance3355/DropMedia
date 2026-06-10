@@ -208,11 +208,7 @@ export function ProductHub({
     window.api.onProductStateUpdated(setState)
     window.api.onWatchItemsFound(({ source, items }) => {
       if (!items.length) return
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification('DropMedia takip bildirimi', {
-          body: `${source.label}: ${items.length} yeni içerik bulundu.`
-        })
-      }
+      window.api.notify('DropMedia takip bildirimi', `${source.label}: ${items.length} yeni içerik bulundu.`)
     })
     return () => {
       mounted = false

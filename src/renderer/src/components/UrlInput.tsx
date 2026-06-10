@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
 import { VideoInfo, VideoFormat } from '../types'
 import { detectPlatform, formatDuration } from '../utils/platform'
-import { isLikelyVideoUrl } from '../utils/videoUrl'
+import { isLikelyVideoUrl, isInstagramStoriesUrl } from '../utils/videoUrl'
 
 interface Props {
   onDownload: (url: string, format: string, videoInfo: VideoInfo) => Promise<boolean>
+  onOpenStories?: (url: string) => void
   disabled?: boolean
   incomingUrl?: { id: string; url: string } | null
   onIncomingUrlHandled?: () => void
@@ -18,7 +19,7 @@ const FETCH_MSGS = [
   'Metadata işleniyor…',
 ]
 
-export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandled }: Props) {
+export function UrlInput({ onDownload, onOpenStories, disabled, incomingUrl, onIncomingUrlHandled }: Props) {
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null)
@@ -42,6 +43,14 @@ export function UrlInput({ onDownload, disabled, incomingUrl, onIncomingUrlHandl
   async function handleFetch() {
     if (!url.trim() || !isValidUrl(url)) {
       setError('Geçerli bir URL girin')
+      return
+    }
+    // Instagram story/highlight: analiz yerine uygulama içi görüntüleyici aç.
+    if (isInstagramStoriesUrl(url) && onOpenStories) {
+      setError('')
+      onOpenStories(url.trim())
+      setUrl('')
+      setVideoInfo(null)
       return
     }
     setError('')
