@@ -166,3 +166,8 @@ Ana sürüm
 - Çerez sorunu çözüldü: tarayıcıyı bir kez tamamen kapatman yeter; sonra Opera GX/Chrome açıkken bile üye-özel içerik iner (çerezler otomatik kaydediliyor)
 - Güncelleme: installer değişmediyse tekrar indirilmiyor (daha az veri)
 - Kütüphane sekmesi kaldırıldı (Geçmiş ile aynıydı)
+
+---
+
+# 1.0.16
+Installer kaldirma/guncelleme cokmesi (ENOTEMPTY) duzeltildi: surec tam kapanana kadar beklenir, silmeler kilit/yarisa dayanikli. Ayrica: Instagram story/highlight uygulama-ici goruntuleyici, YouTube cerez/format retry merdiveni + sessiz yt-dlp guncelleme, bildirimde DropMedia adi+logo, islem gostergesi nefes-alan nokta, semver guncelleme kontrolu.
