@@ -6,10 +6,10 @@
  */
 
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, rmSync, statSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir, tmpdir } from 'os'
-import { get as httpsGet } from 'https'
+import { get as httpsGet, request as httpsRequest } from 'https'
 import { spawn } from 'child_process'
 import { is } from '@electron-toolkit/utils'
 import { logError } from './logger'
@@ -160,6 +160,28 @@ function downloadFile(
   return attempt(0)
 }
 
+// Installer'ın uzak sürümünün kimliği (içerik değişmeden değişmez): ETag +
+// boyut. Cache'lenmiş installer ile eşleşirse yeniden indirme.
+function httpsHead(url: string): Promise<{ size: number; etag: string }> {
+  return new Promise((resolve, reject) => {
+    const follow = (u: string, redirects: number): void => {
+      if (redirects > 5) { reject(new Error('Çok fazla yönlendirme')); return }
+      const req = httpsRequest(u, { method: 'HEAD', headers: { 'User-Agent': 'DropMedia/1.0' } }, (res) => {
+        const code = res.statusCode ?? 0
+        if ((code === 301 || code === 302 || code === 307 || code === 308) && res.headers.location) {
+          res.resume(); follow(res.headers.location, redirects + 1); return
+        }
+        res.resume()
+        resolve({ size: parseInt(res.headers['content-length'] ?? '0', 10), etag: String(res.headers['etag'] ?? '') })
+      })
+      req.on('error', reject)
+      req.setTimeout(15_000, () => req.destroy(new Error('HEAD zaman aşımı')))
+      req.end()
+    }
+    follow(url, 0)
+  })
+}
+
 export function setupUpdater(window: BrowserWindow): void {
   const send = (data: object) => {
     if (!window.isDestroyed()) window.webContents.send('update-status', data)
@@ -196,23 +218,46 @@ export function setupUpdater(window: BrowserWindow): void {
       const tmp = join(tmpdir(), 'dropmedia-update')
       mkdirSync(tmp, { recursive: true })
       installerExe = join(tmp, 'DropMedia-Installer.exe')
+      const metaPath = installerExe + '.meta'
 
-      let lastSent = 0
-      send({ type: 'downloading', progress: { percent: 0, bytesPerSecond: 0, total: 0, transferred: 0 } })
-      await downloadFile(`${INSTALLER_URL}?nc=${Date.now()}`, installerExe, (transferred, total) => {
-        const now = Date.now()
-        if (now - lastSent < 250) return // banner'ı boğma
-        lastSent = now
-        send({
-          type: 'downloading',
-          progress: {
-            percent: total > 0 ? Math.round((transferred / total) * 100) : 0,
-            bytesPerSecond: 0,
-            total,
-            transferred
-          }
+      // Installer içeriği çoğu sürümde değişmez (app zip'i ayrı iner). ETag+boyut
+      // cache'lenmiş dosyayla eşleşirse 114MB'yi yeniden indirme.
+      let remote: { size: number; etag: string } | null = null
+      try { remote = await httpsHead(`${INSTALLER_URL}?nc=${Date.now()}`) } catch { remote = null }
+
+      let cached: { size: number; etag: string } | null = null
+      try { cached = JSON.parse(readFileSync(metaPath, 'utf8')) } catch { cached = null }
+
+      const reusable = !!remote && remote.etag !== '' && !!cached &&
+        cached.etag === remote.etag && existsSync(installerExe) &&
+        statSync(installerExe).size === remote.size
+
+      if (reusable) {
+        send({ type: 'downloading', progress: { percent: 100, bytesPerSecond: 0, total: remote!.size, transferred: remote!.size } })
+      } else {
+        let lastSent = 0
+        send({ type: 'downloading', progress: { percent: 0, bytesPerSecond: 0, total: 0, transferred: 0 } })
+        await downloadFile(`${INSTALLER_URL}?nc=${Date.now()}`, installerExe, (transferred, total) => {
+          const now = Date.now()
+          if (now - lastSent < 250) return // banner'ı boğma
+          lastSent = now
+          send({
+            type: 'downloading',
+            progress: {
+              percent: total > 0 ? Math.round((transferred / total) * 100) : 0,
+              bytesPerSecond: 0,
+              total,
+              transferred
+            }
+          })
         })
-      })
+        // İndirilen installer'ın kimliğini kaydet (sonraki Güncelle reuse etsin).
+        try {
+          const size = statSync(installerExe).size
+          const etag = remote?.etag || ''
+          writeFileSync(metaPath, JSON.stringify({ size, etag }))
+        } catch { /* meta yazılamazsa sadece reuse devre dışı kalır */ }
+      }
     } catch (err) {
       installing = false
       const msg = err instanceof Error ? err.message : String(err)

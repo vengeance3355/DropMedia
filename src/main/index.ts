@@ -16,6 +16,7 @@ import { setupSyncHandlers } from './sync'
 import { setupAdminClientHandlers } from './adminClient'
 import { setupUpdater } from './updater'
 import { setupInstallerHandlers } from './installer'
+import { snapshotAllCookies } from './cookies'
 import { flushPendingRemoteLogs, logActivity, logError, getLocalLogPath } from './logger'
 import { startAdminBridge } from './adminBridge'
 import { isLikelyVideoUrl } from './videoUrl'
@@ -234,6 +235,10 @@ app.whenReady().then(() => {
   })
 
   setupWindowControls()
+  // Çerez snapshot'ını açılışta + periyodik tazele: tarayıcının doğal kapalı
+  // anlarını yakalayıp çerezleri kaydet (sonra tarayıcı açıkken de kullanılır).
+  void snapshotAllCookies()
+  setInterval(() => { void snapshotAllCookies() }, 4 * 60_000)
   setupDownloadHandlers(ipcMain)
   setupAiHandlers(ipcMain)
   setupMediaJobHandlers(ipcMain)

@@ -1,6 +1,7 @@
-import { existsSync, readdirSync } from 'fs'
+import { existsSync, readdirSync, copyFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { spawnSync } from 'child_process'
+import { app } from 'electron'
 
 export interface CookieSource {
   id: string
@@ -23,46 +24,87 @@ interface BrowserDef {
 
 const IS_WIN = process.platform === 'win32'
 
-// Tarayıcı AÇIKKEN chromium çerez DB'si kilitlidir; yt-dlp kopyalayamaz
-// ("Could not copy Chrome cookie database", yt-dlp#7271). AUTO seçim çalışan
-// tarayıcıyı atlasın diye süreç listesi kontrol edilir (5sn cache).
-const BROWSER_PROCESSES: Record<string, string[]> = {
-  chrome: ['chrome.exe'],
-  chromium: ['chromium.exe'],
-  brave: ['brave.exe'],
-  opera: ['opera.exe'],
-  edge: ['msedge.exe']
-}
+// ── Çerez snapshot ────────────────────────────────────────────────────────────
+// Tarayıcı AÇIKKEN chromium çerez DB'si paylaşımsız kilitlidir; admin'siz canlı
+// kopya imkansızdır (esentutl /y ve FileStream ReadWrite ikisi de "in use" verir).
+// yt-dlp'nin "tarayıcıyı kapatın" demesinin sebebi budur. Çözüm: dosya
+// kopyalanabildiği HER an (tarayıcı kapalı/erişilebilir) Cookies + Local State'i
+// (decrypt anahtarı) userData/cookie-cache'e kopyala; kilitliyken son
+// snapshot'tan oku. Opera GX vb. ESKİ DPAPI şifrelemesi kullanır (App-Bound
+// değil) — yt-dlp snapshot'tan decrypt edebilir; session çerezleri haftalarca
+// geçerli olduğundan kullanıcı tarayıcıyı yalnızca bir kez (ya da doğal kapalı
+// anlarda) kapatması yeter, her indirmede değil.
+//
+// yt-dlp yol semantiği (canlı doğrulandı): "browser:<dir>" -> Cookies <dir>
+// ağacında aranır; Local State browser_dir'den okunur. opera
+// supports_profiles=False -> browser_dir = verilen path (Local State o path'in
+// kökünde olmalı); chrome/edge/brave/chromium -> browser_dir = dirname(path).
 
-let runningProcsCache: { at: number; names: Set<string> } | null = null
+interface SourceRef { def: BrowserDef; profile: string; cookiePath: string }
 
-function runningProcessNames(): Set<string> {
-  if (runningProcsCache && Date.now() - runningProcsCache.at < 5000) return runningProcsCache.names
-  const names = new Set<string>()
+function cookieCacheRoot(): string {
   try {
-    const r = spawnSync('tasklist', ['/FO', 'CSV', '/NH'], { timeout: 4000 })
-    for (const line of (r.stdout?.toString() ?? '').split('\n')) {
-      const m = line.match(/^"([^"]+)"/)
-      if (m) names.add(m[1].toLowerCase())
+    const dir = join(app.getPath('userData'), 'cookie-cache')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  } catch {
+    return join(process.env.LOCALAPPDATA || process.env.TMP || '.', 'dropmedia-cookie-cache')
+  }
+}
+
+// Tüm tarayıcı/profillerde var olan çerez kaynakları (rank sıralı).
+function listSourceRefs(): SourceRef[] {
+  const refs: SourceRef[] = []
+  for (const def of getBrowserDefs()) {
+    if (!existsSync(def.root)) continue
+    for (const profile of profileDirs(def)) {
+      const cookiePath = cookiePathFor(def, profile)
+      if (cookiePath && existsSync(cookiePath)) refs.push({ def, profile, cookiePath })
     }
-  } catch { /* tasklist yoksa kilit tespiti devre dışı kalır */ }
-  runningProcsCache = { at: Date.now(), names }
-  return names
+  }
+  return refs.sort((a, b) => browserRank(a.def.browser) - browserRank(b.def.browser))
 }
 
-function isBrowserLocked(browser: string, kind: 'firefox' | 'chromium'): boolean {
-  if (!IS_WIN || kind !== 'chromium') return false
-  const procs = BROWSER_PROCESSES[browser] ?? []
-  if (!procs.length) return false
-  const running = runningProcessNames()
-  return procs.some(p => running.has(p))
+// Snapshot'ı tazele (kopyalanabiliyorsa) + geçerli snapshot varsa yt-dlp
+// argümanını döndür; yoksa null (firefox kilitlemez -> canlı arg).
+function snapshotArg(ref: SourceRef): string | null {
+  const { def, profile, cookiePath } = ref
+  if (def.kind === 'firefox') return cookieArgFor(def, profile)
+
+  const snapDir = join(cookieCacheRoot(), def.browser)
+  try { mkdirSync(snapDir, { recursive: true }) } catch { /* ignore */ }
+
+  // Local State (kilitsiz) — her seferinde tazele.
+  const lsSrc = join(def.root, 'Local State')
+  try { if (existsSync(lsSrc)) copyFileSync(lsSrc, join(snapDir, 'Local State')) } catch { /* ignore */ }
+
+  const opera = def.browser === 'opera'
+  const profDir = opera ? snapDir : join(snapDir, profile || 'Default')
+  try { mkdirSync(profDir, { recursive: true }) } catch { /* ignore */ }
+  const cookieDest = join(profDir, 'Cookies')
+  // Cookies — kilitliyse kopya atılır, ESKİ snapshot korunur.
+  try { copyFileSync(cookiePath, cookieDest) } catch { /* kilitli */ }
+
+  if (existsSync(join(snapDir, 'Local State')) && existsSync(cookieDest)) {
+    return `${def.browser}:${opera ? snapDir : profDir}`
+  }
+  return null
 }
 
-// AUTO'nun normalde seçeceği ama tarayıcı açık olduğu için kilitli olan en iyi
-// kaynak — indirme hatalarında "tarayıcıyı kapatın" yönlendirmesi için.
-export function lockedAutoSourceLabel(url?: string): string | null {
-  const locked = detectCookieSources(url).find(source => source.locked)
-  return locked?.label ?? null
+// Uygulama açılışında + periyodik: erişilebilir tüm çerezleri snapshot'la.
+export function snapshotAllCookies(): void {
+  for (const ref of listSourceRefs()) {
+    try { snapshotArg(ref) } catch { /* ignore */ }
+  }
+}
+
+// Mesajlaşma: chromium kaynağı VAR ama henüz okunabilir snapshot YOK (tarayıcı
+// hiç kapanmamış) -> "bir kez kapat" denecek etiket; aksi halde null.
+export function cookieSnapshotMissingLabel(_url?: string): string | null {
+  const refs = listSourceRefs().filter(ref => ref.def.kind === 'chromium')
+  if (!refs.length) return null
+  for (const ref of refs) if (snapshotArg(ref)) return null
+  return refs[0].def.label
 }
 
 // Platform-aware home paths
@@ -116,59 +158,37 @@ export function detectCookieSources(url?: string): CookieSource[] {
         profile: def.rootProfile ? undefined : profile,
         path: cookiePath,
         arg,
-        hasRelevantCookies,
-        locked: isBrowserLocked(def.browser, def.kind)
+        hasRelevantCookies
       })
     }
   }
 
   return sources.sort((a, b) => {
     if (a.hasRelevantCookies !== b.hasRelevantCookies) return a.hasRelevantCookies ? -1 : 1
-    if (!!a.locked !== !!b.locked) return a.locked ? 1 : -1
     return browserRank(a.browser) - browserRank(b.browser)
   })
 }
 
-// Hafif kaynak bulma — sqlite3 çalıştırmaz, sadece dosya varlığı kontrol eder.
-function findCookieSources(): { arg: string; browser: string; locked: boolean }[] {
-  const sources: { arg: string; browser: string; locked: boolean }[] = []
-  for (const def of getBrowserDefs()) {
-    if (!existsSync(def.root)) continue
-    for (const profile of profileDirs(def)) {
-      const cookiePath = cookiePathFor(def, profile)
-      if (!cookiePath || !existsSync(cookiePath)) continue
-      sources.push({
-        arg: cookieArgFor(def, profile),
-        browser: def.browser,
-        locked: isBrowserLocked(def.browser, def.kind)
-      })
-    }
+export function resolveAutoCookieBrowser(_url?: string): string | undefined {
+  // Snapshot'ı olan (okunabilir) ilk kaynağı kullan. Hiçbiri yoksa undefined ->
+  // çerezsiz dene (chromium canlı argümanı kilitli/yanlış olur, boşa deneme).
+  for (const ref of listSourceRefs()) {
+    const arg = snapshotArg(ref)
+    if (arg) return arg
   }
-  return sources.sort((a, b) => browserRank(a.browser) - browserRank(b.browser))
-}
-
-export function resolveAutoCookieBrowser(url?: string): string | undefined {
-  // Kilitli (açık tarayıcı) kaynakları atla: denemesi kesin başarısız, her
-  // işlemde ilk denemeyi boşa harcar + log kirletir.
-  const detected = detectCookieSources(url).find(source => !source.locked)
-  if (detected) return detected.arg
-  return findCookieSources().find(source => !source.locked)?.arg
+  return undefined
 }
 
 export function resolveCookieBrowser(setting?: string, url?: string): string | undefined {
   const value = (setting ?? '').trim()
-  if (!value) return resolveAutoCookieBrowser(url)
-  if (value === 'auto') return resolveAutoCookieBrowser(url)
   if (value === 'devre dışı' || value === 'disabled') return undefined
+  if (!value || value === 'auto') return resolveAutoCookieBrowser(url)
 
-  const sources = findCookieSources()
-
-  if (value.includes(':')) {
-    const exact = sources.find(s => s.arg === value)
-    return exact?.arg ?? value  // Bulunamazsa olduğu gibi geç
-  }
-
-  return sources.find(s => s.browser === value)?.arg
+  const match = listSourceRefs().find(ref =>
+    value.includes(':') ? cookieArgFor(ref.def, ref.profile) === value : ref.def.browser === value
+  )
+  if (match) return snapshotArg(match) ?? undefined
+  return value.includes(':') ? value : undefined // bilinmeyen explicit değer: olduğu gibi
 }
 
 function profileDirs(def: BrowserDef): string[] {

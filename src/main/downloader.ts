@@ -6,7 +6,7 @@ import { tmpdir } from 'os'
 import Store from 'electron-store'
 import { statSync } from 'fs'
 import { logError, logStat, logDownload } from './logger'
-import { detectCookieSources, resolveCookieBrowser, lockedAutoSourceLabel } from './cookies'
+import { detectCookieSources, resolveCookieBrowser, cookieSnapshotMissingLabel } from './cookies'
 import { generateThumbnail, downloadRemoteThumbnail } from './thumbnailCache'
 import { resolveYtDlpPath, resolveFfmpegPath, resolveFfprobePath, getYtDlpBin } from './platform'
 
@@ -290,12 +290,12 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
 
     if (result.code !== 0) {
       let msg = friendlyError(result.stderr, url, 'fetch')
-      // Giriş isteyen içerik + çerezsiz deneme + asıl çerez kaynağı kilitli
-      // (tarayıcı açık) ise genel mesaj yerine asıl çözümü söyle.
-      if (isAuthenticationRequiredError((result.stderr + result.stdout).toLowerCase()) && !cookieArgOf(usedArgs)) {
-        const locked = lockedAutoSourceLabel(url)
-        if (locked) {
-          msg = `Bu içerik giriş gerektiriyor. ${locked} açık olduğu için çerezleri okunamadı — tarayıcıyı tamamen kapatıp tekrar deneyin.`
+      // Giriş isteyen içerik + henüz çerez snapshot'ı yoksa: kullanıcıdan her
+      // indirmede değil, BİR KEZ tarayıcıyı kapatmasını iste (snapshot seed).
+      if (isAuthenticationRequiredError((result.stderr + result.stdout).toLowerCase())) {
+        const missing = cookieSnapshotMissingLabel(url)
+        if (missing) {
+          msg = `Bu içerik giriş gerektiriyor. ${missing} çerezleri henüz kaydedilmedi. ${missing}'i bir kez tamamen kapatıp (arka plan/tepsi dahil) yeniden açın — DropMedia çerezleri otomatik kaydedecek, sonra ${missing} açıkken bile çalışır.`
         }
       }
       await logError({ errorType: 'fetch', errorMessage: msg, url, operation: 'fetch-info', command: formatCommand(bin, usedArgs), exitCode: result.code, stderr: result.stderr, stdout: result.stdout })
