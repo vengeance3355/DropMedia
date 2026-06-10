@@ -456,7 +456,7 @@ export interface StoryItem {
 }
 
 export interface StoryReel {
-  kind: 'user' | 'highlight'
+  kind: 'user' | 'highlight' | 'post'
   id: string
   username: string
   title: string

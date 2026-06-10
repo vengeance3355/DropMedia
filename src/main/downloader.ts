@@ -46,6 +46,20 @@ function getMainWindow(): BrowserWindow | undefined {
   return BrowserWindow.getAllWindows().find(w => !w.isDestroyed())
 }
 
+// Duraklat/iptal: yt-dlp ALT SÜREÇLER spawn eder (ffmpeg, fragman indiriciler).
+// `proc.kill('SIGTERM')` Windows'ta yalnız yt-dlp.exe'yi sonlandırır; çocuklar
+// indirmeye devam eder → progress bar duraklatınca bile ilerliyordu. Windows'ta
+// SÜREÇ AĞACINI öldür (taskkill /T /F /PID); diğer platformlarda SIGTERM yeter.
+function killProcessTree(proc: ReturnType<typeof spawn>): void {
+  if (!proc.pid) { try { proc.kill('SIGTERM') } catch { /* ignore */ } ; return }
+  if (process.platform === 'win32') {
+    try { spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore' }) }
+    catch { try { proc.kill('SIGTERM') } catch { /* ignore */ } }
+  } else {
+    try { proc.kill('SIGTERM') } catch { /* ignore */ }
+  }
+}
+
 export function hasFfmpeg(): boolean {
   try { return spawnSync(resolveFfmpegPath(), ['-version'], { timeout: 2000 }).status === 0 }
   catch { return false }
@@ -433,7 +447,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
     const proc = activeDownloads.get(id)
     if (proc) {
       cancellingDownloads.add(id)
-      proc.kill('SIGTERM')
+      killProcessTree(proc)
       return true
     }
     return false
@@ -444,7 +458,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
     const proc = activeDownloads.get(id)
     if (proc) {
       pausingDownloads.add(id)
-      proc.kill('SIGTERM')
+      killProcessTree(proc)
       return true
     }
     return false

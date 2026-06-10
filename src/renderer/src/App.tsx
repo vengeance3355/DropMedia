@@ -164,8 +164,9 @@ export default function App() {
   async function downloadStoryItem(item: StoryItem, reel: StoryReel) {
     const dir = downloadDir || await window.api.getDownloadsFolder()
     const username = reel.username || 'instagram'
-    const filename = `${username}_story_${item.index + 1}`
-    const title = `@${username} story ${item.index + 1}`
+    const kindLabel = reel.kind === 'post' ? 'post' : 'story'
+    const filename = `${username}_${kindLabel}_${item.index + 1}`
+    const title = `@${username} ${kindLabel} ${item.index + 1}`
     const videoInfo: VideoInfo = {
       id: item.id,
       title,
@@ -571,9 +572,7 @@ export default function App() {
           <aside className="flex w-[220px] shrink-0 flex-col border-r border-white/[0.04] bg-[#0F0F12]/95 px-3 py-4">
             <nav className="flex-1 overflow-y-auto flex flex-col gap-1 min-h-0 pb-2">
               <SidebarItem active={activeTab === 'queue'} onClick={() => setActiveTab('queue')} icon={<DownloadIcon />}>
-                İndir{activeCount > 0
-                  ? <ActiveDot />
-                  : queueItems.length > 0 && <Badge>{queueItems.length}</Badge>}
+                İndir{queueItems.length > 0 && <ActiveDot />}
               </SidebarItem>
               <SidebarItem active={activeTab === 'links'} onClick={() => setActiveTab('links')} icon={<LinkIcon />}>
                 Linkler

@@ -57,6 +57,8 @@ export function isInstagramStoriesUrl(value: string): boolean {
     const host = url.hostname.replace(/^www\./, '').toLowerCase()
     if (host !== 'instagram.com' && !host.endsWith('.instagram.com')) return false
     const parts = url.pathname.split('/').filter(Boolean)
+    // Gönderi /p/<shortcode>/ → story görüntüleyicide carousel olarak açılır.
+    if (parts[0] === 'p' && !!parts[1]) return true
     if (parts[0] !== 'stories' || parts.length < 2) return false
     // /stories/highlights/<id> ya da /stories/<kullanıcı>[/...]
     if (parts[1] === 'highlights') return /^\d+$/.test((parts[2] ?? '').replace(/\D/g, '')) && !!parts[2]

@@ -10,9 +10,9 @@
 
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, renameSync, statSync, createWriteStream } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, createWriteStream, promises as fsp } from 'fs'
 import { get as httpsGet } from 'https'
-import { spawn, spawnSync } from 'child_process'
+import { spawn } from 'child_process'
 import { tmpdir } from 'os'
 import { is } from '@electron-toolkit/utils'
 
@@ -68,7 +68,7 @@ function httpsGetJson(url: string): Promise<unknown> {
  * resume (yarım kalan bayttan devam), retry (yeni bağlantı). 40MB'de sonsuz asılı
  * kalma sorununu çözer.
  */
-function downloadFile(
+async function downloadFile(
   url: string,
   dest: string,
   onProgress: (pct: number, mb: number, totalMb: number) => void
@@ -160,7 +160,7 @@ function downloadFile(
     })
 
   // Temiz başlangıç: önceki yarım dosyayı sil; resume yalnız aynı çağrının retry'larında.
-  try { if (existsSync(dest)) rmSync(dest) } catch { /* ignore */ }
+  try { if (existsSync(dest)) await fsp.rm(dest, { force: true }) } catch { /* ignore */ }
   return attempt(0)
 }
 
@@ -180,76 +180,114 @@ function runPs(script: string): Promise<void> {
   })
 }
 
-function isDropMediaRunning(): boolean {
-  try {
-    const r = spawnSync('tasklist', ['/FI', 'IMAGENAME eq DropMedia.exe', '/NH'], { encoding: 'utf8', timeout: 5000 })
-    return (r.stdout || '').toLowerCase().includes('dropmedia.exe')
-  } catch {
-    return false
-  }
+// ── Dosya/süreç yardımcıları ──────────────────────────────────────────────────
+// HEPSİ ASYNC: installer'ın main process'i hiçbir zaman bloklanmaz. Önceki
+// sürümdeki spawnSync döngüleri + senkron rmSync (büyük ağaçta saniyeler,
+// kilitli dosyada retry'larla 10+ sn) event loop'u kilitleyip pencereyi
+// "yanıt vermiyor"a düşürüyordu (%20'de donma). Async I/O + canlı progress ile
+// pencere hep akıcı kalır.
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+// Uzun (ama ilerlemesi ölçülemeyen) bir işi sararken progress bar'ı from→to
+// arası yavaşça ilerletir → kullanıcı "takıldı" sanmaz, pencere canlı görünür.
+async function withHeartbeat<T>(
+  from: number, to: number, label: string,
+  onProgress: (pct: number, status: string) => void,
+  fn: () => Promise<T>
+): Promise<T> {
+  let pct = from
+  onProgress(pct, label)
+  const tick = setInterval(() => { pct = Math.min(pct + 1, to); onProgress(pct, label) }, 550)
+  try { return await fn() } finally { clearInterval(tick) }
 }
 
-/**
- * DropMedia'yı GÜVENLE sonlandırır ve dosya kilitleri serbest kalana kadar bekler.
- * Eski sürüm yalnızca 1 kez taskkill + sabit 1.5sn bekliyordu; süreç tam ölmeden
- * dosya işlemine geçilince `resources\app.asar` kilitli kalıp recursive silme
- * `ENOTEMPTY` ile patlıyordu (yarım kurulum/yarım kaldırma). Burada:
- *  - tüm DropMedia.exe süreçleri ağaçça (/T) zorla (/F) öldürülür,
- *  - tasklist ile süreç KAYBOLANA kadar beklenir (~15sn'ye kadar),
- *  - Windows'un handle'ları geç bırakması için kısa bir settle eklenir.
- */
-async function killDropMedia(): Promise<void> {
-  await new Promise<void>(resolve => {
-    const p = spawn('taskkill', ['/F', '/T', '/IM', 'DropMedia.exe'], { stdio: 'pipe' })
-    p.on('close', () => resolve())
-    p.on('error', () => resolve())
+function runQuiet(cmd: string, args: string[], timeoutMs = 10_000): Promise<{ code: number; stdout: string }> {
+  return new Promise(resolve => {
+    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    const t = setTimeout(() => { try { p.kill() } catch { /* ignore */ } }, timeoutMs)
+    p.stdout?.on('data', (d: Buffer) => (out += d.toString()))
+    p.on('close', code => { clearTimeout(t); resolve({ code: code ?? -1, stdout: out }) })
+    p.on('error', () => { clearTimeout(t); resolve({ code: -1, stdout: out }) })
   })
-  // Süreç tablosundan kaybolana kadar bekle (handle'lar serbest kalsın).
-  for (let i = 0; i < 30; i++) {
-    if (!isDropMediaRunning()) break
-    spawnSync('taskkill', ['/F', '/T', '/IM', 'DropMedia.exe'], { stdio: 'ignore', timeout: 5000 })
-    await new Promise(r => setTimeout(r, 500))
+}
+
+async function isDropMediaRunning(): Promise<boolean> {
+  const r = await runQuiet('tasklist', ['/FI', 'IMAGENAME eq DropMedia.exe', '/NH'], 5000)
+  return r.stdout.toLowerCase().includes('dropmedia.exe')
+}
+
+/**
+ * DropMedia'yı sonlandırır ve süreç tablosundan KAYBOLANA kadar bekler (60sn'ye
+ * kadar; askıdaki süreç bazen ilk taskkill'i yemez — tekrarlar). Canlı durum
+ * callback'i ile kullanıcı sayaç görür; pencere donmaz. true = kapandı.
+ */
+async function killDropMedia(onStatus?: (s: string) => void): Promise<boolean> {
+  if (!(await isDropMediaRunning())) return true
+  const started = Date.now()
+  while (Date.now() - started < 60_000) {
+    await runQuiet('taskkill', ['/F', '/T', '/IM', 'DropMedia.exe'], 8000)
+    await sleep(700)
+    if (!(await isDropMediaRunning())) { await sleep(900); return true } // handle settle
+    const secs = Math.round((Date.now() - started) / 1000)
+    onStatus?.(`DropMedia kapatılıyor... (${secs} sn — kapanmıyorsa pencerelerini elle kapatın)`)
+    await sleep(1300)
   }
-  // Kilit serbest bırakma gecikmesi için son bir settle.
-  await new Promise(r => setTimeout(r, 1200))
+  return false
 }
+
+/** Dayanıklı async silme: kilit/yarışta tekrar dener; ASLA throw etmez. */
+async function rmrfAsync(target: string, attempts = 15): Promise<boolean> {
+  if (!existsSync(target)) return true
+  for (let i = 0; i < attempts; i++) {
+    try { await fsp.rm(target, { recursive: true, force: true }); return true }
+    catch { await sleep(400) }
+  }
+  return !existsSync(target)
+}
+
+// Kalan dizini bir sonraki oturum açılışında siler (kilit reboot'ta serbest kalır).
+async function scheduleDeleteOnReboot(target: string): Promise<void> {
+  await runQuiet('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce',
+    '/v', `DropMediaCleanup${Date.now()}`, '/t', 'REG_SZ',
+    '/d', `cmd /c rmdir /s /q "${target}"`, '/f'], 5000)
+}
+
+type RemoveOutcome = 'removed' | 'scheduled' | 'leftover'
 
 /**
- * Dizini/dosyayı kilit ve "boş değil" yarışlarına karşı dayanıklı siler.
- * Node rmSync(maxRetries/retryDelay) EBUSY/ENOTEMPTY/EPERM'de otomatik tekrar
- * eder — `ENOTEMPTY: rmdir` hatasının doğrudan çözümü.
+ * Kurulum dizinini güvenle boşaltır — ASLA throw etmez (ENOTEMPTY diyaloğu bitti):
+ *  0) Önce version.json + DropMedia.exe tek tek silinir: işlem yarıda kalsa bile
+ *     installer bir daha "güncel" YALANI söyleyemez ve bozuk exe kalmaz.
+ *  1) Dayanıklı async silme.
+ *  2) Olmazsa dizini yana taşı (.old-*) ve onu sil / reboot'ta sil.
+ *  3) O da olmazsa: kaldırmada reboot'ta sil; kurulumda kalanların üstüne
+ *     -Force extract edilir (allowSchedule=false → RunOnce YENİ kurulumu silmesin).
  */
-function rmrf(target: string): void {
-  if (!existsSync(target)) return
-  rmSync(target, { recursive: true, force: true, maxRetries: 25, retryDelay: 400 })
-}
+async function removeInstallDir(dir: string, opts: { allowSchedule: boolean }): Promise<RemoveOutcome> {
+  if (!existsSync(dir)) return 'removed'
 
-// Kalan dizini bir sonraki oturum açılışında siler (kilit reboot'ta serbest
-// kalır). MoveFileEx yerine RunOnce — P/Invoke gerektirmez, güvenilir.
-function scheduleDeleteOnReboot(target: string): void {
-  try {
-    spawnSync('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce',
-      '/v', `DropMediaCleanup${Date.now()}`, '/t', 'REG_SZ',
-      '/d', `cmd /c rmdir /s /q "${target}"`, '/f'], { stdio: 'ignore', timeout: 5000 })
-  } catch { /* ignore */ }
-}
+  for (const f of ['version.json', 'DropMedia.exe']) {
+    const p = join(dir, f)
+    if (!existsSync(p)) continue
+    for (let i = 0; i < 10; i++) {
+      try { await fsp.rm(p, { force: true }); break } catch { await sleep(300) }
+    }
+  }
 
-/**
- * Dizini kesinlikle "yoldan çıkarır": önce dayanıklı sil; olmazsa yana taşı
- * (kill sonrası exe ölü olduğundan dizin rename'i çalışır, içteki dosya 3.
- * partice kilitli olsa bile), sonra reboot'ta sil. Böylece kaldırma/kurulum
- * ASLA "ENOTEMPTY" ile patlamaz — kullanıcı bir daha o hatayı görmez.
- */
-function forceRemoveDir(dir: string): void {
-  if (!existsSync(dir)) return
-  try { rmrf(dir); return } catch { /* hâlâ kilitli — yana taşımayı dene */ }
+  if (await rmrfAsync(dir, 12)) return 'removed'
+
   const aside = `${dir}.old-${Date.now()}`
   try {
-    renameSync(dir, aside)
-    try { rmrf(aside) } catch { scheduleDeleteOnReboot(aside) }
-    return
-  } catch { /* taşıma da olmadı (dizin handle'ı açık) — son çare */ }
-  try { rmrf(dir) } catch { scheduleDeleteOnReboot(dir) }
+    await fsp.rename(dir, aside)
+    if (!(await rmrfAsync(aside, 5)) && opts.allowSchedule) await scheduleDeleteOnReboot(aside)
+    return 'removed' // hedef yol boşaldı — kurulum açısından temiz
+  } catch { /* dizin handle'ı açık — son çare */ }
+
+  if (await rmrfAsync(dir, 5)) return 'removed'
+  if (opts.allowSchedule) { await scheduleDeleteOnReboot(dir); return 'scheduled' }
+  return 'leftover'
 }
 
 function launchDropMedia(dir: string): void {
@@ -336,9 +374,11 @@ async function performInstall(
   })
 
   // Eski kurulumu temiz kaldır (çağıran zaten killDropMedia yaptı): kilitli/eski
-  // dosya üzerine yazma çakışmasını ve stale dosyaları önler. Kilitliyse
-  // forceRemoveDir yana taşır → her hâlükârda temiz dizine extract edilir.
-  forceRemoveDir(dir)
+  // dosya üzerine yazma çakışmasını ve stale dosyaları önler. Kilitliyse yana
+  // taşınır → her hâlükârda temiz dizine extract edilir. allowSchedule=false:
+  // YENİ kurulumu RunOnce'la silmeyelim.
+  await withHeartbeat(70, 75, 'Eski sürüm temizleniyor...', onProgress,
+    () => removeInstallDir(dir, { allowSchedule: false }))
   mkdirSync(dir, { recursive: true })
 
   onProgress(76, 'Dosyalar çıkartılıyor...')
@@ -355,7 +395,7 @@ async function performInstall(
   }
 
   // Temizle
-  try { rmrf(tmpDir) } catch {}
+  await rmrfAsync(tmpDir, 5)
 
   // Kayıt
   onProgress(88, 'Sürüm bilgisi yazılıyor...')
@@ -371,27 +411,31 @@ async function performInstall(
   return { version }
 }
 
-async function performUninstall(onProgress: (pct: number, status: string) => void): Promise<void> {
-  onProgress(5,  'DropMedia kapatılıyor...')
-  await killDropMedia()
+async function performUninstall(onProgress: (pct: number, status: string) => void): Promise<RemoveOutcome> {
+  onProgress(5, 'DropMedia kapatılıyor...')
+  // Canlı sayaçlı kill (askıdaki süreçte bile pencere donmaz).
+  await killDropMedia(s => onProgress(12, s))
 
-  onProgress(20, 'Dosyalar siliniyor...')
-  // forceRemoveDir asla throw etmez: silemezse yana taşır / reboot'a planlar.
-  // Yarım kaldırma (exe silinip app.asar kalması) + ENOTEMPTY çökmesi biter.
-  forceRemoveDir(activeDir)
+  // Silme: heartbeat ile bar 20→58 arası akıcı ilerler (statik %20 donması biter).
+  // removeInstallDir ASLA throw etmez: silemezse yana taşır / reboot'a planlar.
+  const outcome = await withHeartbeat(20, 58, 'Dosyalar siliniyor...', onProgress,
+    () => removeInstallDir(activeDir, { allowSchedule: true }))
 
-  onProgress(60, 'Kısayollar siliniyor...')
+  onProgress(62, 'Kısayollar siliniyor...')
   const desk = join(process.env.USERPROFILE || 'C:\\Users\\Default', 'Desktop', 'DropMedia.lnk')
   const sm   = join(
     process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'DropMedia'
   )
-  try { rmrf(desk) } catch {}
-  try { rmrf(sm) } catch {}
+  await rmrfAsync(desk, 5)
+  await rmrfAsync(sm, 5)
 
-  onProgress(80, 'Kayıt defteri temizleniyor...')
+  onProgress(82, 'Kayıt defteri temizleniyor...')
   await runCmd(`reg delete "${REG_KEY}" /f`)
 
-  onProgress(100, 'Kaldırma tamamlandı.')
+  onProgress(100, outcome === 'scheduled'
+    ? 'Kaldırıldı. Kalan birkaç dosya yeniden başlatınca silinecek.'
+    : 'Kaldırma tamamlandı.')
+  return outcome
 }
 
 // ── Pencere ───────────────────────────────────────────────────────────────────
@@ -475,10 +519,14 @@ app.whenReady().then(async () => {
       notes = vd.notes || ''
     } catch {}
 
+    // IS_UPDATE (in-app "Güncelle"): kurulu sürüm = latest görünse bile (CDN/cache
+    // gecikmesi) 'update' moduna zorla — kullanıcı güncelleme istedi, "güncel" deyip
+    // boş bırakma. Yeniden kurulum zaten zararsız (temiz extract).
     const mode =
-      !installedVersion                                         ? 'install'  :
-      latestVersion && installedVersion !== latestVersion       ? 'update'   :
-                                                                  'uptodate'
+      !installedVersion                                          ? 'install'  :
+      IS_UPDATE                                                  ? 'update'   :
+      latestVersion && installedVersion !== latestVersion        ? 'update'   :
+                                                                   'uptodate'
 
     // autoStart: app içinden --update ile açıldıysa renderer güncellemeyi otomatik başlatır
     return { mode, installedVersion, latestVersion, installDir: activeDir, notes, autoStart: IS_UPDATE }
@@ -492,8 +540,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('installer-start', async (_e, targetDir?: string) => {
     if (targetDir) activeDir = targetDir
     if (getInstalledVersion()) {
-      send('installer-progress', { pct: 0, status: 'DropMedia kapatılıyor...' })
-      await killDropMedia()
+      send('installer-progress', { pct: 4, status: 'DropMedia kapatılıyor...' })
+      await killDropMedia(s => send('installer-progress', { pct: 6, status: s }))
     }
     try {
       await performInstall(activeDir, (pct, status) => send('installer-progress', { pct, status }))
@@ -513,7 +561,8 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('installer-repair', async () => {
-    await killDropMedia()
+    send('installer-progress', { pct: 4, status: 'DropMedia kapatılıyor...' })
+    await killDropMedia(s => send('installer-progress', { pct: 6, status: s }))
     try {
       await performInstall(activeDir, (pct, status) => send('installer-progress', { pct, status }))
       send('installer-done', { success: true, action: 'repair' })

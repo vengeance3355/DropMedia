@@ -113,7 +113,11 @@ export function useDownloadStore() {
     (id: string, progress: number, speed: string, eta: string, totalSize: string) => {
       setItems((prev) =>
         prev.map((item) =>
-          item.id === id ? { ...item, progress, speed, eta, totalSize } : item
+          // Yalnız aktif indirme ilerlesin: duraklatılan/iptal edilen öğeye geç
+          // gelen progress event'i bar'ı oynatmasın (duraklatınca bar dursun).
+          item.id === id && item.status === 'downloading'
+            ? { ...item, progress, speed, eta, totalSize }
+            : item
         )
       )
     },

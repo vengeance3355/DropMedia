@@ -74,11 +74,13 @@ function Spinner({ size = 5 }: { size?: number }) {
 
 function ProgressBar({ pct }: { pct: number }) {
   return (
-    <div className="w-full h-1.5 rounded-full bg-white/8 overflow-hidden">
+    <div className="relative w-full h-1.5 rounded-full bg-white/8 overflow-hidden">
       <div
         className="h-full bg-gradient-progress rounded-full transition-all duration-300 ease-out"
         style={{ width: `${Math.max(2, pct)}%` }}
       />
+      {/* kayan parıltı: işlem sürerken bar canlı kalır */}
+      <div className="progress-shimmer rounded-full"/>
     </div>
   )
 }
@@ -206,7 +208,10 @@ function WorkingScreen({ action, pct, status }: { action: Action; pct: number; s
     <div className="flex flex-col items-center gap-6 animate-fade-in w-full">
       <Logo spinning/>
       <div className="text-center">
-        <h2 className="text-white text-base font-semibold">{labels[action]}</h2>
+        <h2 className="text-white text-base font-semibold flex items-center justify-center gap-2">
+          {labels[action]}
+          <span className="work-dot inline-block w-2 h-2 rounded-full bg-purple-400"/>
+        </h2>
         <p className="text-white/40 text-xs mt-1">{status || 'Lütfen bekleyin'}</p>
       </div>
       <div className="w-full space-y-2">

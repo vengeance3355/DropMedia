@@ -43,21 +43,28 @@ export interface StoryItem {
 }
 
 export interface StoryReel {
-  kind: 'user' | 'highlight'
+  kind: 'user' | 'highlight' | 'post'
   id: string
   username: string
   title: string
   items: StoryItem[]
 }
 
+type ParsedStoriesUrl =
+  | { kind: 'user'; username: string }
+  | { kind: 'highlight'; id: string }
+  | { kind: 'post'; shortcode: string }
+
 // ── URL ayrıştırma ────────────────────────────────────────────────────────────
 
-export function parseStoriesUrl(rawUrl: string): { kind: 'user'; username: string } | { kind: 'highlight'; id: string } | null {
+export function parseStoriesUrl(rawUrl: string): ParsedStoriesUrl | null {
   try {
     const url = new URL(rawUrl)
     const host = url.hostname.replace(/^www\./, '').toLowerCase()
     if (host !== 'instagram.com' && !host.endsWith('.instagram.com')) return null
     const parts = url.pathname.split('/').filter(Boolean)
+    // Gönderi: /p/<shortcode>/ — story görüntüleyicide carousel olarak gösterilir.
+    if ((parts[0] === 'p') && parts[1]) return { kind: 'post', shortcode: parts[1] }
     if (parts[0] !== 'stories' || parts.length < 2) return null
     if (parts[1] === 'highlights') {
       const id = (parts[2] ?? '').replace(/\D/g, '')
@@ -215,6 +222,7 @@ interface RawStoryItem {
   image_versions2?: { candidates?: RawCandidate[] }
   video_versions?: RawCandidate[]
   user?: { username?: string }
+  carousel_media?: RawStoryItem[]
 }
 interface RawReel {
   title?: string
@@ -222,14 +230,75 @@ interface RawReel {
   items?: RawStoryItem[]
 }
 
+// reels_media öğesi / post carousel öğesi → StoryItem (ortak biçim).
+function mapRawMedia(it: RawStoryItem, idx: number, username: string, pageUrl: string): StoryItem {
+  const isVideo = it.media_type === 2
+  const img = it.image_versions2?.candidates?.[0]
+  const vid = isVideo ? it.video_versions?.[0] : undefined
+  return {
+    id: String(it.pk ?? it.id ?? idx),
+    index: idx,
+    username: it.user?.username ?? username,
+    isVideo,
+    mediaUrl: vid?.url ?? img?.url ?? '',
+    thumbnail: img?.url ?? '',
+    duration: typeof it.video_duration === 'number' ? it.video_duration : 0,
+    takenAt: (it.taken_at ?? 0) * 1000,
+    width: vid?.width ?? img?.width ?? 0,
+    height: vid?.height ?? img?.height ?? 0,
+    pageUrl
+  }
+}
+
+// Instagram shortcode → media_id (base64url'i büyük tam sayı olarak çöz).
+function shortcodeToMediaId(shortcode: string): string {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+  let id = 0n
+  for (const c of shortcode) {
+    const v = A.indexOf(c)
+    if (v < 0) return ''
+    id = id * 64n + BigInt(v)
+  }
+  return id.toString()
+}
+
+// Gönderi (/p/<shortcode>/): tekil veya carousel — story görüntüleyiciyle aynı
+// biçimde gösterilir. Story/highlight yolundan tamamen bağımsız.
+async function fetchPost(shortcode: string, cookies: CookieBundle): Promise<StoryReel> {
+  const mediaId = shortcodeToMediaId(shortcode)
+  if (!mediaId) throw new Error('Bu gönderi bağlantısı çözümlenemedi.')
+
+  const r = await igApiGet(`https://i.instagram.com/api/v1/media/${mediaId}/info/`, cookies)
+  if (r.status === 401 || r.status === 403) throw new Error(authHelpMessage())
+  if (r.status !== 200) throw new Error(`Instagram yanıt vermedi (HTTP ${r.status}). Daha sonra tekrar deneyin.`)
+
+  let media: RawStoryItem | undefined
+  try {
+    media = (JSON.parse(r.body) as { items?: RawStoryItem[] }).items?.[0]
+  } catch {
+    throw new Error(`Instagram yanıtı işlenemedi. ${authHelpMessage()}`)
+  }
+  if (!media) throw new Error('Gönderi bulunamadı veya erişilemiyor.')
+
+  const username = media.user?.username ?? ''
+  const pageUrl = `https://www.instagram.com/p/${shortcode}/`
+  const rawItems = media.carousel_media?.length ? media.carousel_media : [media]
+  const items = rawItems.map((it, idx) => mapRawMedia(it, idx, username, pageUrl)).filter(s => s.mediaUrl)
+  if (!items.length) throw new Error('Bu gönderide indirilebilir medya bulunamadı.')
+
+  return { kind: 'post', id: shortcode, username, title: `@${username}`, items }
+}
+
 export async function fetchStories(rawUrl: string): Promise<StoryReel> {
   const parsed = parseStoriesUrl(rawUrl)
-  if (!parsed) throw new Error('Bu bağlantı bir Instagram story/highlight bağlantısı değil.')
+  if (!parsed) throw new Error('Bu bağlantı bir Instagram story/highlight/gönderi bağlantısı değil.')
 
   const cookies = await exportCookieBundle()
   if (!cookies) {
-    throw new Error(`Story'ler için Instagram çerezi gerekli. ${authHelpMessage()}`)
+    throw new Error(`İçerik için Instagram çerezi gerekli. ${authHelpMessage()}`)
   }
+
+  if (parsed.kind === 'post') return fetchPost(parsed.shortcode, cookies)
 
   const reelId = parsed.kind === 'highlight' ? `highlight:${parsed.id}` : await resolveUserId(parsed.username, cookies)
   const r = await igApiGet(
