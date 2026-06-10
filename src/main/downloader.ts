@@ -122,13 +122,44 @@ function isAuthenticationRequiredError(text: string): boolean {
 }
 
 // Tarayıcı cookie'si OKUNAMADI (örn. Chrome'un yeni şifrelemesi: "Failed to
-// decrypt with DPAPI", yt-dlp #10927). Bu, "giriş gerekli" değildir — cookiesiz
-// tekrar denemek doğru harekettir.
+// decrypt with DPAPI", yt-dlp #10927; ya da tarayıcı açıkken kilitli DB:
+// "Could not copy Chrome cookie database", #7271). Bu, "giriş gerekli"
+// değildir — cookiesiz tekrar denemek doğru harekettir.
 function isCookieExtractionError(text: string): boolean {
   return text.includes('failed to decrypt') ||
     text.includes('dpapi') ||
     (text.includes('could not copy') && text.includes('cookie')) ||
     (text.includes('cookie') && text.includes('database'))
+}
+
+// Oturum içi kara liste: cookie çıkarımı başarısız olan kaynaklar (kilitli DB,
+// DPAPI). Sonraki işlemler aynı kaynağı tekrar deneyip ilk denemeyi boşa
+// harcamasın. Uygulama yeniden başlatılınca sıfırlanır (tarayıcı kapanmış
+// olabilir).
+const failedCookieSources = new Set<string>()
+
+function cookieArgOf(args: string[]): string | undefined {
+  const i = args.indexOf('--cookies-from-browser')
+  return i >= 0 ? args[i + 1] : undefined
+}
+
+function noteCookieRetry(opts: {
+  operation: string
+  url: string
+  cookieArg?: string
+  stderr: string
+  cookieError: boolean
+}): void {
+  if (opts.cookieError && opts.cookieArg) failedCookieSources.add(opts.cookieArg)
+  void logError({
+    errorType: 'warning',
+    errorMessage: opts.cookieError
+      ? `Tarayıcı çerezi okunamadı (${opts.cookieArg ?? '?'}); cookiesiz tekrar denendi.`
+      : 'Cookie ile format hatası alındı; cookiesiz tekrar denendi.',
+    url: opts.url,
+    operation: opts.operation,
+    stderr: opts.stderr.slice(0, 1500)
+  })
 }
 
 export function buildAccessArgs(url: string, opts: { useTor?: boolean; cookieBrowser?: string } = {}): string[] {
@@ -137,10 +168,15 @@ export function buildAccessArgs(url: string, opts: { useTor?: boolean; cookieBro
   const cookieBrowser = opts.cookieBrowser ?? (store.get('cookieBrowser') as string | undefined)
   const resolvedCookieBrowser = resolveCookieBrowser(cookieBrowser, url)
 
-  if (useTor) args.push('--proxy', 'socks5://127.0.0.1:9050')
-  if (resolvedCookieBrowser) args.push('--cookies-from-browser', resolvedCookieBrowser)
+  // Kara listedeki kaynak (kilitli/şifreli cookie DB) cookiesiz gibi davranır.
+  const usableCookieBrowser = resolvedCookieBrowser && !failedCookieSources.has(resolvedCookieBrowser)
+    ? resolvedCookieBrowser
+    : undefined
 
-  if (isTwitterUrl(url) && !resolvedCookieBrowser) args.push('--extractor-args', 'twitter:api=syndication')
+  if (useTor) args.push('--proxy', 'socks5://127.0.0.1:9050')
+  if (usableCookieBrowser) args.push('--cookies-from-browser', usableCookieBrowser)
+
+  if (isTwitterUrl(url) && !usableCookieBrowser) args.push('--extractor-args', 'twitter:api=syndication')
 
   return args
 }
@@ -218,6 +254,14 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
         || lower.includes('cookies')
         || isCookieExtractionError(lower)
       if (isFormatOrCookieError && (!isAuthenticationRequiredError(lower) || isCookieExtractionError(lower))) {
+        // Retry'ı admin loguna yaz + okunamayan kaynağı oturum boyu kara listele.
+        noteCookieRetry({
+          operation: 'fetch-info-cookie-retry',
+          url,
+          cookieArg: cookieArgOf(accessArgs),
+          stderr: result.stderr,
+          cookieError: isCookieExtractionError(lower)
+        })
         // 'disabled' şart: '' resolveCookieBrowser'da AUTO'ya düşer ve yine
         // aynı cookie'li argümanı üretir (DPAPI hatası sonsuza dek tekrarlardı).
         const noCookieArgs = [...baseArgs, ...buildAccessArgs(url, { cookieBrowser: 'disabled' }), url]
@@ -486,7 +530,15 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
           getMainWindow()?.webContents.send('download-paused', { id })
           return
         }
-        getMainWindow()?.webContents.send('download-log', { id, msg: 'Cookie ile format hatası alındı, cookiesiz tekrar deneniyor…' })
+        getMainWindow()?.webContents.send('download-log', { id, msg: 'Cookie kaynaklı hata alındı, cookiesiz tekrar deneniyor…' })
+        // Retry'ı admin loguna yaz + okunamayan kaynağı oturum boyu kara listele.
+        noteCookieRetry({
+          operation: 'download-cookie-retry',
+          url,
+          cookieArg: cookieArgOf(args),
+          stderr,
+          cookieError: isCookieExtractionError(lower)
+        })
         // 'disabled' şart: '' AUTO'ya düşüp yine cookie eklerdi.
         startDownloadProcess({ ...opts, cookieBrowser: 'disabled' }, 'retry-no-cookies')
         return

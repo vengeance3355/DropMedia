@@ -22,12 +22,20 @@ function getDeviceId(): string {
   return id
 }
 
+// Oturum başına bir kez tespit edilir: her log kaydında yt-dlp spawn etmek
+// pahalı, üstelik 2sn'lik eski timeout binary'nin soğuk açılışına yetmeyip
+// tüm loglarda "unknown" yazdırıyordu.
+let cachedYtDlpVersion: string | null = null
+
 function getYtDlpVersion(): string {
+  if (cachedYtDlpVersion) return cachedYtDlpVersion
   try {
     const custom = store.get('ytDlpPath') as string | undefined
     const bin = resolveYtDlpPath(custom ?? undefined)
-    const r = spawnSync(bin, ['--version'], { timeout: 2000 })
-    return r.stdout?.toString().trim() || 'unknown'
+    const r = spawnSync(bin, ['--version'], { timeout: 8000 })
+    const v = r.stdout?.toString().trim() || 'unknown'
+    if (v !== 'unknown') cachedYtDlpVersion = v
+    return v
   } catch { return 'unknown' }
 }
 

@@ -13,6 +13,7 @@ import { setupAiHandlers } from './ai'
 import { setupMediaJobHandlers } from './mediaJobs'
 import { setupProductHubHandlers, startProductWatchScheduler, stopProductWatchScheduler } from './productHub'
 import { setupSyncHandlers } from './sync'
+import { setupAdminClientHandlers } from './adminClient'
 import { setupUpdater } from './updater'
 import { setupInstallerHandlers } from './installer'
 import { flushPendingRemoteLogs, logActivity, logError, getLocalLogPath } from './logger'
@@ -238,6 +239,7 @@ app.whenReady().then(() => {
   setupMediaJobHandlers(ipcMain)
   setupProductHubHandlers(ipcMain)
   setupSyncHandlers(ipcMain)
+  setupAdminClientHandlers(ipcMain)
 
   // Thumbnail IPC — video path'ten ffmpeg ile frame çıkar, image path'ten dosyayı oku
   ipcMain.handle('get-thumbnail', async (_e, filePath: string) => {

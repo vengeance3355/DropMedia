@@ -86,6 +86,32 @@ export interface AppSettings {
   fileDragBehavior?: 'drag' | 'copy'
 }
 
+export interface AdminStatus {
+  configured: boolean
+  signedIn: boolean
+  baseUrl: string
+  expiresAt?: number
+}
+
+export interface AdminRelease {
+  github_id?: number
+  version: string
+  title?: string
+  notes?: string
+  github_tag?: string
+  windows_exe_url?: string
+  windows_blockmap_url?: string
+  latest_yml_url?: string
+  asset_names?: string[]
+  created_at?: string
+  prerelease?: boolean
+}
+
+export interface AdminReleasePublishInput {
+  version?: string
+  notes?: string
+}
+
 export interface UpdateStatus {
   type: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
   info?: Record<string, unknown>
