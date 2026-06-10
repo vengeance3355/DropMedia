@@ -159,3 +159,10 @@ Ana sürüm
 - AI artık çok aşamalı çalışıyor: özet istediğinde transcript yoksa önce kendisi çıkarıyor (AI Chat dahil)
 - Tarayıcı açıkken çerez hatası ve gereksiz uyarılar kalktı; giriş isteyen içerikte net yönlendirme
 - İndir sekmesinde aktif işlem göstergesi; Takip/Otomasyon/AI/AI Chat artık Beta rozetli
+
+---
+
+# 1.0.15
+- Çerez sorunu çözüldü: tarayıcıyı bir kez tamamen kapatman yeter; sonra Opera GX/Chrome açıkken bile üye-özel içerik iner (çerezler otomatik kaydediliyor)
+- Güncelleme: installer değişmediyse tekrar indirilmiyor (daha az veri)
+- Kütüphane sekmesi kaldırıldı (Geçmiş ile aynıydı)

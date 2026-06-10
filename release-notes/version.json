@@ -1,4 +1,4 @@
 {
-  "version": "1.0.14",
-  "notes": "- AI artık çok aşamalı çalışıyor: özet istediğinde transcript yoksa önce kendisi çıkarıyor (AI Chat dahil)\n- Tarayıcı açıkken çerez hatası ve gereksiz uyarılar kalktı; giriş isteyen içerikte net yönlendirme\n- İndir sekmesinde aktif işlem göstergesi; Takip/Otomasyon/AI/AI Chat artık Beta rozetli"
+  "version": "1.0.15",
+  "notes": "- Çerez sorunu çözüldü: tarayıcıyı bir kez tamamen kapatman yeter; sonra Opera GX/Chrome açıkken bile üye-özel içerik iner (çerezler otomatik kaydediliyor)\n- Güncelleme: installer değişmediyse tekrar indirilmiyor (daha az veri)\n- Kütüphane sekmesi kaldırıldı (Geçmiş ile aynıydı)"
 }
