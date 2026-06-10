@@ -171,3 +171,8 @@ Ana sürüm
 
 # 1.0.16
 Installer kaldirma/guncelleme cokmesi (ENOTEMPTY) duzeltildi: surec tam kapanana kadar beklenir, silmeler kilit/yarisa dayanikli. Ayrica: Instagram story/highlight uygulama-ici goruntuleyici, YouTube cerez/format retry merdiveni + sessiz yt-dlp guncelleme, bildirimde DropMedia adi+logo, islem gostergesi nefes-alan nokta, semver guncelleme kontrolu.
+
+---
+
+# 1.0.17
+24 saatlik Instagram story'leri (/stories/kullanici/) artik calisiyor (topsearch ile cozuldu). Installer kaldirma/guncelleme artik 3. parti kilit (Defender/Explorer) durumunda bile cokmuyor - silemezse yana tasiyip reboot'ta siliyor. Cookie ayarinda yalniz gercek varsayilan tarayici (varsayilan) etiketli; gereksiz (Default) gurultusu kaldirildi.
