@@ -20,6 +20,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import Store from 'electron-store'
 import { resolveCookieBrowser, cookieSnapshotMissingLabel, listCookieExportArgs } from './cookies'
+import { cookieBundleFromPartition, promptIgLogin, type CookieBundle } from './igLogin'
 import { getYtDlpPath } from './downloader'
 import { logError, logDownload } from './logger'
 
@@ -77,8 +78,8 @@ export function parseStoriesUrl(rawUrl: string): ParsedStoriesUrl | null {
 }
 
 // ── Çerez çözümü (yt-dlp jar export, 5 dk cache) ─────────────────────────────
+// CookieBundle tipi igLogin.ts'te (uygulama içi giriş de aynı biçimi üretir).
 
-interface CookieBundle { header: string; csrf?: string }
 let cookieCache: { bundle: CookieBundle; at: number } | null = null
 const COOKIE_TTL = 5 * 60_000
 
@@ -148,6 +149,15 @@ async function exportCookieBundle(): Promise<CookieBundle | null> {
       return bundle
     }
   }
+
+  // Hiçbir tarayıcıdan çıkmadı (girişsiz ya da App-Bound şifreli — Chrome/Edge
+  // 127+ çerezini yt-dlp çözemez): daha önce uygulama içinden yapılmış
+  // Instagram girişinin kalıcı çerezleri.
+  const part = await cookieBundleFromPartition()
+  if (part) {
+    cookieCache = { bundle: part, at: Date.now() }
+    return part
+  }
   return null
 }
 
@@ -184,9 +194,21 @@ function igApiGet(url: string, cookies: CookieBundle): Promise<{ status: number;
 function authHelpMessage(): string {
   const missing = cookieSnapshotMissingLabel()
   if (missing) {
-    return `Instagram oturumu için ${missing} çerezleri henüz kaydedilmedi. ${missing}'i bir kez tamamen kapatıp (arka plan/tepsi dahil) yeniden açın — DropMedia çerezleri otomatik kaydedecek.`
+    return `Instagram oturumu için ${missing} çerezleri henüz kaydedilmedi. ${missing}'i bir kez tamamen kapatıp (arka plan/tepsi dahil) yeniden açın — DropMedia çerezleri otomatik kaydedecek. Ya da açılan pencerede Instagram'a giriş yapın.`
   }
-  return 'Instagram oturumu doğrulanamadı. Tarayıcınızda instagram.com\'a giriş yaptığınızdan emin olun; gerekirse tarayıcıyı bir kez kapatıp açın.'
+  return 'Instagram oturumu doğrulanamadı. Açılan pencerede Instagram\'a giriş yapın ya da tarayıcınızda instagram.com\'a giriş yapıp tarayıcıyı bir kez kapatıp açın.'
+}
+
+// "Oturum yok/geçersiz" sınıfı hata: yakalayan taraf uygulama içi Instagram
+// girişi açıp isteği bir kez daha deneyebilir.
+function authError(msg: string): Error {
+  const e = new Error(msg) as Error & { igAuth?: boolean }
+  e.igAuth = true
+  return e
+}
+
+function isAuthTagged(err: unknown): boolean {
+  return err instanceof Error && (err as Error & { igAuth?: boolean }).igAuth === true
 }
 
 // topsearch ile user_id (pk) çöz. web_profile_info çoğu zaman 429 (rate-limit)
@@ -225,9 +247,9 @@ async function resolveUserId(username: string, cookies: CookieBundle): Promise<s
       if (id) return id
     } catch { /* aşağıdaki hataya düş */ }
   }
-  if (r.status === 401 || r.status === 403) throw new Error(authHelpMessage())
+  if (r.status === 401 || r.status === 403) throw authError(authHelpMessage())
   if (r.status === 404) throw new Error(`@${username} bulunamadı. Kullanıcı adını kontrol edin.`)
-  throw new Error(`@${username} profil bilgisi alınamadı. ${authHelpMessage()}`)
+  throw authError(`@${username} profil bilgisi alınamadı. ${authHelpMessage()}`)
 }
 
 interface RawCandidate { url?: string; width?: number; height?: number }
@@ -287,14 +309,15 @@ async function fetchPost(shortcode: string, cookies: CookieBundle): Promise<Stor
   if (!mediaId) throw new Error('Bu gönderi bağlantısı çözümlenemedi.')
 
   const r = await igApiGet(`https://i.instagram.com/api/v1/media/${mediaId}/info/`, cookies)
-  if (r.status === 401 || r.status === 403) throw new Error(authHelpMessage())
+  if (r.status === 401 || r.status === 403) throw authError(authHelpMessage())
   if (r.status !== 200) throw new Error(`Instagram yanıt vermedi (HTTP ${r.status}). Daha sonra tekrar deneyin.`)
 
   let media: RawStoryItem | undefined
   try {
     media = (JSON.parse(r.body) as { items?: RawStoryItem[] }).items?.[0]
   } catch {
-    throw new Error(`Instagram yanıtı işlenemedi. ${authHelpMessage()}`)
+    // JSON yerine HTML = login duvarı → oturum sınıfı hata.
+    throw authError(`Instagram yanıtı işlenemedi. ${authHelpMessage()}`)
   }
   if (!media) throw new Error('Gönderi bulunamadı veya erişilemiyor.')
 
@@ -311,11 +334,38 @@ export async function fetchStories(rawUrl: string): Promise<StoryReel> {
   const parsed = parseStoriesUrl(rawUrl)
   if (!parsed) throw new Error('Bu bağlantı bir Instagram story/highlight/gönderi bağlantısı değil.')
 
-  const cookies = await exportCookieBundle()
-  if (!cookies) {
-    throw new Error(`İçerik için Instagram çerezi gerekli. ${authHelpMessage()}`)
-  }
+  const usedCookies = await exportCookieBundle()
+  try {
+    if (!usedCookies) throw authError(`İçerik için Instagram çerezi gerekli. ${authHelpMessage()}`)
+    return await fetchParsed(parsed, usedCookies)
+  } catch (err) {
+    if (!isAuthTagged(err)) throw err
+    cookieCache = null
 
+    // 1) Tarayıcı çerezi bayat olabilir; uygulama içi oturum (partition) varsa
+    //    ve kullanılandan farklıysa, pencere açmadan önce onu dene.
+    const part = await cookieBundleFromPartition()
+    if (part && part.header !== usedCookies?.header) {
+      try {
+        const reel = await fetchParsed(parsed, part)
+        cookieCache = { bundle: part, at: Date.now() }
+        return reel
+      } catch (err2) {
+        if (!isAuthTagged(err2)) throw err2
+      }
+    }
+
+    // 2) Uygulama içi Instagram girişi: Chrome/Edge 127+ App-Bound şifreli
+    //    çerez dışarıdan çözülemez; kullanıcı pencerede bir kez giriş yapar,
+    //    oturum kalıcı partition'da yaşar. Girerse aynı istek tekrar denenir.
+    const fresh = await promptIgLogin({ clearFirst: true })
+    if (!fresh) throw err
+    cookieCache = { bundle: fresh, at: Date.now() }
+    return await fetchParsed(parsed, fresh)
+  }
+}
+
+async function fetchParsed(parsed: NonNullable<ReturnType<typeof parseStoriesUrl>>, cookies: CookieBundle): Promise<StoryReel> {
   if (parsed.kind === 'post') return fetchPost(parsed.shortcode, cookies)
 
   const reelId = parsed.kind === 'highlight' ? `highlight:${parsed.id}` : await resolveUserId(parsed.username, cookies)
@@ -323,7 +373,7 @@ export async function fetchStories(rawUrl: string): Promise<StoryReel> {
     `https://i.instagram.com/api/v1/feed/reels_media/?reel_ids=${encodeURIComponent(reelId)}`,
     cookies
   )
-  if (r.status === 401 || r.status === 403) throw new Error(authHelpMessage())
+  if (r.status === 401 || r.status === 403) throw authError(authHelpMessage())
   if (r.status !== 200) throw new Error(`Instagram yanıt vermedi (HTTP ${r.status}). Daha sonra tekrar deneyin.`)
 
   let reel: RawReel | undefined
@@ -331,7 +381,8 @@ export async function fetchStories(rawUrl: string): Promise<StoryReel> {
     const data = JSON.parse(r.body) as { reels?: Record<string, RawReel>; reels_media?: RawReel[] }
     reel = data.reels?.[reelId] ?? data.reels_media?.[0]
   } catch {
-    throw new Error(`Instagram yanıtı işlenemedi. ${authHelpMessage()}`)
+    // JSON yerine HTML = login duvarı → oturum sınıfı hata.
+    throw authError(`Instagram yanıtı işlenemedi. ${authHelpMessage()}`)
   }
 
   const username = reel?.user?.username ?? (parsed.kind === 'user' ? parsed.username : '')

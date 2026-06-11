@@ -157,6 +157,24 @@ function isYoutubeFormatError(text: string): boolean {
 // en geniş format kapsaması (canlı doğrulandı).
 const YT_FALLBACK_CLIENTS = 'youtube:player_client=tv,web_safari,android,web'
 
+// İndirme/bağlantı katmanında GEÇİCİ SSL/ağ hatası — örn. "[SSL:
+// INVALID_SESSION_ID] invalid session id (_ssl.c:1007)": bazı ISP'lerin
+// (TR'de yaygın) googlevideo DPI'ında TLS oturumu bozulur; yt-dlp kendi
+// --retries'ı aynı bağlantı yolunu denediği için kurtaramaz. Çözüm kalite
+// değil bağlantı yolu değiştirmek: --force-ipv4 + (YouTube'da) farklı player
+// client → farklı CDN ucu/URL.
+function isTransientNetworkError(text: string): boolean {
+  return text.includes('invalid_session_id') ||
+    text.includes('ssl:') ||
+    text.includes('sslerror') ||
+    text.includes('ssl error') ||
+    text.includes('handshake') ||
+    text.includes('connection reset') ||
+    text.includes('econnreset') ||
+    text.includes('10054') ||
+    text.includes('eof occurred in violation')
+}
+
 function isAuthenticationRequiredError(text: string): boolean {
   return text.includes('need to log in') ||
     text.includes('login required') ||
@@ -246,6 +264,9 @@ function buildArgs(url: string, opts: DownloadOptions): string[] {
   // YouTube format/extraction hatası sonrası geniş player client seti dene.
   if (opts.ytExtraClients && isYoutubeUrl(url)) args.push('--extractor-args', YT_FALLBACK_CLIENTS)
 
+  // Geçici SSL/ağ hatası sonrası retry: IPv4'e sabitle (bozuk IPv6/DPI ucundan kaç).
+  if (opts.forceIpv4) args.push('--force-ipv4')
+
   // Hız limiti
   if (speedLimit && speedLimit > 0) args.push('--limit-rate', `${speedLimit}M`)
 
@@ -314,8 +335,17 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
 
     // YouTube format/extraction hatası → geniş player client seti ile tekrar
     // (cookie'yi düşürmeden). Hata genelde o anki tek client'ın boş dönmesi.
-    if (result.code !== 0 && isYoutubeUrl(url) && isYoutubeFormatError((result.stderr + result.stdout).toLowerCase())) {
-      const clientArgs = [...baseArgs, ...accessArgs, '--extractor-args', YT_FALLBACK_CLIENTS, url]
+    // Geçici SSL/ağ hatasında da (örn. [SSL: INVALID_SESSION_ID]) aynı tekrar,
+    // ek olarak --force-ipv4 ile: bozuk IPv6/DPI ucundan kaçınılır.
+    const firstLower = (result.stderr + result.stdout).toLowerCase()
+    const firstNetErr = isTransientNetworkError(firstLower)
+    if (result.code !== 0 && (firstNetErr || (isYoutubeUrl(url) && isYoutubeFormatError(firstLower)))) {
+      const clientArgs = [
+        ...baseArgs, ...accessArgs,
+        ...(firstNetErr ? ['--force-ipv4'] : []),
+        ...(isYoutubeUrl(url) ? ['--extractor-args', YT_FALLBACK_CLIENTS] : []),
+        url
+      ]
       const retry = await runProcess(bin, clientArgs)
       if (retry.code === 0) {
         result = retry
@@ -482,7 +512,7 @@ export function setupDownloadHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('detect-cookie-sources', (_e, url?: string) => detectCookieSources(url))
 }
 
-type DownloadMode = 'start' | 'resume' | 'retry-no-subs' | 'retry-yt-clients' | 'retry-no-cookies'
+type DownloadMode = 'start' | 'resume' | 'retry-no-subs' | 'retry-yt-clients' | 'retry-no-cookies' | 'retry-net'
 
 function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWithoutSubtitles = false): { started: boolean; error?: string } {
   const { id, url, format } = opts
@@ -613,6 +643,24 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
         return true
       }
       return false
+    }
+
+    // ── Adım 0: Geçici SSL/ağ hatası → --force-ipv4 (+YouTube'da alternatif
+    // client'lar). Örn. "[SSL: INVALID_SESSION_ID]": kalite/cookie sorunu değil,
+    // o anki CDN ucuyla TLS el sıkışması bozuk; bağlantı yolunu değiştir.
+    if (!success && !opts.forceIpv4 && isTransientNetworkError(lowerOut)) {
+      dbg(`TRANSIENT_NET_ERROR — retrying with --force-ipv4${isYoutubeUrl(url) ? ' + fallback clients' : ''}`)
+      if (honorPendingControls()) return
+      getMainWindow()?.webContents.send('download-log', { id, msg: 'Bağlantı/SSL hatası alındı — IPv4 ve alternatif sunucuyla yeniden deneniyor…' })
+      void logError({
+        errorType: 'warning',
+        errorMessage: 'Geçici SSL/ağ hatası; --force-ipv4 ile yeniden denendi.',
+        url,
+        operation: 'download-net-retry',
+        stderr: stderr.slice(0, 1500)
+      })
+      startDownloadProcess({ ...opts, forceIpv4: true, ytExtraClients: opts.ytExtraClients || isYoutubeUrl(url) }, 'retry-net')
+      return
     }
 
     // ── Adım 1: YouTube format/extraction hatası → geniş player client seti ──
@@ -755,6 +803,7 @@ function startDownloadProcess(opts: DownloadOptions, mode: DownloadMode, retryWi
           : mode === 'retry-no-subs' ? 'download-retry-no-subs'
           : mode === 'retry-yt-clients' ? 'download-retry-yt-clients'
           : mode === 'retry-no-cookies' ? 'download-retry-no-cookies'
+          : mode === 'retry-net' ? 'download-retry-net'
           : 'download',
         command: formatCommand(bin, args),
         exitCode: code,
@@ -1044,4 +1093,5 @@ interface DownloadOptions {
   thumbnail?: string
   singleStream?: boolean
   ytExtraClients?: boolean
+  forceIpv4?: boolean
 }

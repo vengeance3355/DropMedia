@@ -26,11 +26,12 @@ function stripBom(s: string): string {
   return s.replace(/^﻿/, '').trim()
 }
 
-function httpsGetJson(url: string): Promise<unknown> {
+function httpsGetJson(url: string, timeoutMs = 15_000): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const follow = (u: string) => {
-      httpsGet(u, { headers: { 'User-Agent': 'DropMedia/1.0', Accept: 'application/vnd.github.v3+json' } }, (res) => {
+      const req = httpsGet(u, { headers: { 'User-Agent': 'DropMedia/1.0', Accept: 'application/vnd.github.v3+json' } }, (res) => {
         if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+          res.resume()
           follow(res.headers.location)
           return
         }
@@ -39,7 +40,11 @@ function httpsGetJson(url: string): Promise<unknown> {
         res.on('end', () => {
           try { resolve(JSON.parse(stripBom(data))) } catch (e) { reject(e) }
         })
-      }).on('error', reject)
+      })
+      req.on('error', reject)
+      // Timeout şart: istek askıda kalırsa sürüm kontrolü hiç dönmüyordu
+      // (banner/"Güncelle" sessizce ölü kalıyordu).
+      req.setTimeout(timeoutMs, () => req.destroy(new Error('Sürüm bilgisi zaman aşımı')))
     }
     follow(url)
   })

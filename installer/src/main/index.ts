@@ -9,12 +9,19 @@
  */
 
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join } from 'path'
+import { join, dirname, basename } from 'path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, createWriteStream, promises as fsp } from 'fs'
 import { get as httpsGet } from 'https'
 import { spawn } from 'child_process'
 import { tmpdir } from 'os'
 import { is } from '@electron-toolkit/utils'
+
+// KRİTİK: Electron main process'inde fs asar-yamalıdır — "app.asar" içeren yollar
+// sanal KLASÖR gibi davranır. Installer app.asar'ı düz dosya olarak kopyalar/
+// siler/stat'lar; yama açıkken copyFile arşivin binlerce sanal dosyasını gerçek
+// klasöre "patlatıyor" (kopyalama dakikalarca sürüyor, kurulum bozuluyor) ve
+// stat boyutları yalan söylüyor (doğrulama anlamsızlaşıyor). Kapat.
+process.noAsar = true
 
 // ── Sabitler ──────────────────────────────────────────────────────────────────
 
@@ -46,18 +53,24 @@ function stripBom(s: string): string {
   return s.replace(/^﻿/, '').trim()
 }
 
-function httpsGetJson(url: string): Promise<unknown> {
+function httpsGetJson(url: string, timeoutMs = 15_000): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const follow = (u: string) => {
-      httpsGet(u, { headers: { 'User-Agent': 'DropMedia-Installer/1.0' } }, (res) => {
+      const req = httpsGet(u, { headers: { 'User-Agent': 'DropMedia-Installer/1.0' } }, (res) => {
         if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+          res.resume()
           follow(res.headers.location); return
         }
         let data = ''
         res.on('data', (c: Buffer) => (data += c.toString()))
         res.on('end', () => { try { resolve(JSON.parse(stripBom(data))) } catch (e) { reject(e) } })
         res.on('error', reject)
-      }).on('error', reject)
+      })
+      req.on('error', reject)
+      // TIMEOUT ŞART: bu istek askıda kalırsa installer-info hiç dönmüyor ve
+      // arayüz sonsuza dek spinner'da kalıyordu (canlı görüldü). Soket sessiz
+      // kalırsa kopar → çağıran catch'iyle akış devam eder.
+      req.setTimeout(timeoutMs, () => req.destroy(new Error('Sürüm bilgisi zaman aşımı')))
     }
     follow(url)
   })
@@ -222,12 +235,17 @@ async function isDropMediaRunning(): Promise<boolean> {
  * DropMedia'yı sonlandırır ve süreç tablosundan KAYBOLANA kadar bekler (60sn'ye
  * kadar; askıdaki süreç bazen ilk taskkill'i yemez — tekrarlar). Canlı durum
  * callback'i ile kullanıcı sayaç görür; pencere donmaz. true = kapandı.
+ *
+ * /T (tree) KULLANILMAZ: in-app güncellemede installer DropMedia'nın çocuk
+ * sürecidir — /T installer'ın kendisini de öldürür (güncelleme sessizce yarıda
+ * kalır). DropMedia'nın çocukları (yt-dlp/ffmpeg) kurulum dizinini kilitlemez
+ * (Roaming\drop-media\bin altında çalışırlar), tree kill'e gerek yok.
  */
 async function killDropMedia(onStatus?: (s: string) => void): Promise<boolean> {
   if (!(await isDropMediaRunning())) return true
   const started = Date.now()
   while (Date.now() - started < 60_000) {
-    await runQuiet('taskkill', ['/F', '/T', '/IM', 'DropMedia.exe'], 8000)
+    await runQuiet('taskkill', ['/F', '/IM', 'DropMedia.exe'], 8000)
     await sleep(700)
     if (!(await isDropMediaRunning())) { await sleep(900); return true } // handle settle
     const secs = Math.round((Date.now() - started) / 1000)
@@ -298,13 +316,54 @@ async function removeInstallDir(dir: string, opts: { allowSchedule: boolean }): 
   const aside = `${dir}.old-${Date.now()}`
   try {
     await fsp.rename(dir, aside)
-    if (!(await rmrfAsync(aside, 5)) && opts.allowSchedule) await scheduleDeleteOnReboot(aside)
+    // aside farklı yol (".old-*"): clearRebootCleanup'ın iğnesi (kapanış tırnaklı
+    // tam yol) onu hariç tutar, taze kurulumu silemez → kurulumda da planlamak
+    // güvenli; planlamazsak silinemeyen kopyalar diskte sonsuza dek birikir.
+    if (!(await rmrfAsync(aside, 5))) await scheduleDeleteOnReboot(aside)
     return 'removed' // hedef yol boşaldı — kurulum açısından temiz
   } catch { /* dizin handle'ı açık — son çare */ }
 
   if (await rmrfAsync(dir, 5)) return 'removed'
   if (opts.allowSchedule) { await scheduleDeleteOnReboot(dir); return 'scheduled' }
   return 'leftover'
+}
+
+// Önceki yarım kalmış staging dizinlerini temizle (crash/elektrik kesintisi
+// ".new-*" artığı bırakmış olabilir).
+async function cleanupStaleStages(dir: string): Promise<void> {
+  try {
+    const parent = dirname(dir)
+    const prefix = `${basename(dir)}.new-`
+    for (const name of await fsp.readdir(parent)) {
+      if (name.startsWith(prefix)) await rmrfAsync(join(parent, name), 3)
+    }
+  } catch { /* ignore */ }
+}
+
+// Staging'i, silinemeyen (inatçı leftover) eski dizinin ÜZERİNE dosya dosya
+// kopyalar; dosya başına retry. Hata fırlatmaz — sonuç, performInstall'daki
+// birebir app.asar boyut doğrulamasıyla denetlenir.
+async function copyDirOver(src: string, dst: string): Promise<void> {
+  try { await fsp.mkdir(dst, { recursive: true }) } catch { /* ignore */ }
+  let names: string[] = []
+  try { names = await fsp.readdir(src) } catch { return }
+  for (const name of names) {
+    const s = join(src, name)
+    const d = join(dst, name)
+    let isDir = false
+    try { isDir = (await fsp.stat(s)).isDirectory() } catch { continue }
+    if (isDir) {
+      await copyDirOver(s, d)
+    } else {
+      for (let i = 0; i < 10; i++) {
+        try { await fsp.copyFile(s, d); break }
+        catch {
+          try { await fsp.rm(d, { force: true }) } catch { /* ignore */ }
+          await sleep(300)
+        }
+      }
+    }
+  }
 }
 
 function launchDropMedia(dir: string): void {
@@ -355,7 +414,6 @@ async function performInstall(
   const tmpDir  = join(tmpdir(), 'dropmedia-install-' + Date.now())
   const zipPath = join(tmpDir, 'DropMedia-win-x64.zip')
   mkdirSync(tmpDir, { recursive: true })
-  mkdirSync(dir,    { recursive: true })
 
   // Versiyon bilgisi
   onProgress(0, 'Sürüm bilgisi alınıyor...')
@@ -366,23 +424,31 @@ async function performInstall(
   onProgress(2, `DropMedia v${version} indiriliyor...`)
   await downloadFile(`${ZIP_URL}?nc=${Date.now()}`, zipPath, (pct, mb, total) => {
     onProgress(
-      Math.round(2 + pct * 0.73),
+      Math.round(2 + pct * 0.64),
       `İndiriliyor... ${mb.toFixed(1)} / ${total.toFixed(1)} MB`
     )
   })
 
-  // Çıkart — başarısızlıkta bir kez daha dene (dosya kilidi gibi geçici
-  // sebepler), sonra kritik dosyayı doğrula. Yarım kurulumun "tamamlandı"
-  // sayılıp version.json yazılması felaket olur.
+  // ── Staged kurulum ─────────────────────────────────────────────────────────
+  // Zip ESKİ kurulumun üzerine DEĞİL, her zaman BOŞ bir staging dizinine açılır;
+  // eski dizin kaldırılıp staging yerine taşınır. Eski akış kilitli app.asar
+  // üzerine extract ederken eski dosya hayatta kalabiliyor, installer yine de
+  // version.json'a yeni sürümü yazıyordu → "güncelleme indi ama uygulama hâlâ
+  // v1.0.16" vakası. Staging + aşağıdaki birebir boyut doğrulaması bu hata
+  // sınıfını tamamen kapatır.
+  await cleanupStaleStages(dir)
+  const stageDir = `${dir}.new-${Date.now()}` // aynı volume → rename ucuz/atomik
+  mkdirSync(stageDir, { recursive: true })
+
   const extract = (): Promise<void> => new Promise<void>((resolve, reject) => {
     const ps = spawn('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-Command',
-      `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${dir}' -Force`
+      `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${stageDir}' -Force`
     ], { stdio: 'pipe' })
     let stderr = ''
     ps.stderr?.on('data', (d: Buffer) => (stderr += d.toString()))
-    let pct = 76
-    const tick = setInterval(() => { pct = Math.min(pct + 2, 85); onProgress(pct, 'Dosyalar çıkartılıyor...') }, 1000)
+    let pct = 68
+    const tick = setInterval(() => { pct = Math.min(pct + 2, 78); onProgress(pct, 'Dosyalar çıkartılıyor...') }, 1000)
     ps.on('close', code => {
       clearInterval(tick)
       code === 0 ? resolve() : reject(new Error(`Extract başarısız: ${stderr}`))
@@ -390,41 +456,79 @@ async function performInstall(
     ps.on('error', e => { clearInterval(tick); reject(e) })
   })
 
-  // Eski kurulumu temiz kaldır (çağıran zaten killDropMedia yaptı): kilitli/eski
-  // dosya üzerine yazma çakışmasını ve stale dosyaları önler. Kilitliyse yana
-  // taşınır → her hâlükârda temiz dizine extract edilir. allowSchedule=false:
-  // YENİ kurulumu RunOnce'la silmeyelim.
-  await withHeartbeat(70, 75, 'Eski sürüm temizleniyor...', onProgress,
-    () => removeInstallDir(dir, { allowSchedule: false }))
-  mkdirSync(dir, { recursive: true })
-
-  onProgress(76, 'Dosyalar çıkartılıyor...')
+  onProgress(68, 'Dosyalar çıkartılıyor...')
   try {
     await extract()
   } catch {
-    onProgress(76, 'Çıkartma tekrar deneniyor...')
-    await new Promise(r => setTimeout(r, 2000))
+    onProgress(68, 'Çıkartma tekrar deneniyor...')
+    await sleep(2000)
     await extract()
   }
 
-  if (!existsSync(join(dir, 'DropMedia.exe')) || !existsSync(join(dir, 'resources', 'app.asar'))) {
-    throw new Error('Kurulum doğrulanamadı: gerekli dosyalar çıkartılamadı. Tekrar deneyin.')
+  // Staging doğrulaması + yeni app.asar kimliği (yerleştirme sonrası birebir
+  // karşılaştırma için boyut kaydedilir).
+  const stagedAsar = join(stageDir, 'resources', 'app.asar')
+  if (!existsSync(join(stageDir, 'DropMedia.exe')) || !existsSync(stagedAsar)) {
+    await rmrfAsync(stageDir, 3)
+    throw new Error('Kurulum doğrulanamadı: indirilen paket eksik çıkartıldı. Tekrar deneyin.')
+  }
+  const stagedAsarSize = statSync(stagedAsar).size
+
+  // İndirme uzun sürmüş olabilir; kullanıcı DropMedia'yı bu arada açtıysa kapat
+  // (yerleştirme kilitli dosyaya çarpmasın).
+  await withHeartbeat(80, 82, 'DropMedia kapatılıyor...', onProgress, () => killDropMedia())
+
+  // Eski kurulumu kaldır (kilitliyse yana taşınır → hedef yol yine boşalır).
+  // allowSchedule=false: bu dizini hedefleyen RunOnce YENİ kurulumu silmesin.
+  await withHeartbeat(82, 88, 'Eski sürüm temizleniyor...', onProgress,
+    () => removeInstallDir(dir, { allowSchedule: false }))
+
+  // Staging'i yerine koy: hedef yol boşsa atomik rename; inatçı leftover varsa
+  // dosya dosya üzerine kopyala (eksik kalan her şeyi doğrulama yakalar).
+  onProgress(89, 'Yeni sürüm yerleştiriliyor...')
+  let placed = false
+  if (!existsSync(dir)) {
+    // AV taze extract edilmiş dosyaları birkaç saniye tutabilir → bolca dene;
+    // rename başarısı = atomik yerleştirme, copy fallback'e hiç düşülmez.
+    for (let i = 0; i < 15 && !placed; i++) {
+      try { await fsp.rename(stageDir, dir); placed = true } catch { await sleep(500) }
+    }
+  }
+  if (!placed) {
+    await withHeartbeat(89, 91, 'Yeni sürüm kopyalanıyor...', onProgress,
+      () => copyDirOver(stageDir, dir))
+    await rmrfAsync(stageDir, 5)
+  }
+
+  // ── GERÇEK DOĞRULAMA ───────────────────────────────────────────────────────
+  // Kurulan app.asar staging'dekiyle birebir aynı boyutta olmalı. Değilse eski
+  // sürümün dosyası hayatta demektir: version.json YAZILMAZ (removeInstallDir
+  // onu en başta sildi → installer bir daha "güncel" yalanı söyleyemez) ve
+  // kullanıcı net bir hata + çözüm yolu görür.
+  const finalAsar = join(dir, 'resources', 'app.asar')
+  const finalOk = existsSync(join(dir, 'DropMedia.exe')) && existsSync(finalAsar) &&
+    statSync(finalAsar).size === stagedAsarSize
+  if (!finalOk) {
+    throw new Error(
+      'Güncelleme dosyaları yerleştirilemedi (eski sürümün dosyaları kilitli görünüyor). ' +
+      'Bilgisayarı yeniden başlatıp installer\'ı tekrar çalıştırın.'
+    )
   }
 
   // Temizle
   await rmrfAsync(tmpDir, 5)
 
-  // Kayıt
-  onProgress(88, 'Sürüm bilgisi yazılıyor...')
+  // Kayıt — yalnızca doğrulama geçtikten sonra yazılır.
+  onProgress(93, 'Sürüm bilgisi yazılıyor...')
   writeFileSync(join(dir, 'version.json'), JSON.stringify({ version }, null, 2))
   // Bu dizini hedefleyen bekleyen reboot-silme görevini iptal et (taze kurulum
   // reboot'ta kendini silmesin).
   await clearRebootCleanup(dir)
 
-  onProgress(92, 'Kayıt defteri güncelleniyor...')
+  onProgress(95, 'Kayıt defteri güncelleniyor...')
   await writeRegistry(dir, version)
 
-  onProgress(96, 'Kısayollar oluşturuluyor...')
+  onProgress(97, 'Kısayollar oluşturuluyor...')
   await createShortcuts(dir)
 
   onProgress(100, 'Tamamlandı.')
@@ -506,11 +610,10 @@ function send(ch: string, data: unknown): void {
 // ── IPC + Başlangıç ───────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
-  createWindow()
-
   // ── Silent modu (UI yok, sadece CI/test) ──────────────────────────────────
-  // --update artık UI gösterir + otomatik başlar (aşağıdaki autoStart); böylece
-  // kullanıcı "Güncelle"ye basınca installer açılır ve ilerlemeyi görür.
+  // Pencere hiç açılmaz (eskiden açılıyordu: hem gereksiz hem de renderer'ın
+  // installer-info'su silent kurulumla yarışıyordu). --update UI gösterir +
+  // otomatik başlar (aşağıdaki autoStart).
   if (IS_SILENT) {
     try {
       if (getInstalledVersion()) await killDropMedia()
@@ -528,6 +631,7 @@ app.whenReady().then(async () => {
   }
 
   // ── UI modu ────────────────────────────────────────────────────────────────
+  createWindow()
 
   ipcMain.handle('installer-info', async () => {
     const installedVersion = getInstalledVersion()
