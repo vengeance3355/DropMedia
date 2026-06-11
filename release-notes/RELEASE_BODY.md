@@ -191,3 +191,8 @@ Kaldirma sirasinda AV-kilitli kalan dosya icin reboot temizligi planlanmissa, ku
 
 # 1.0.20
 Instagram story/gonderi cerezi artik TUM tarayicilari deniyor (varsayilan tarayicin Instagram'a girisli degilse bile baska girisli tarayici bulunursa calisir). Eski/tasinabilir kopya uyarisi: ZIP'i masaustune cikarip oradan acan kullanicilar hep eski surum + surekli guncelle banner goruyordu; artik kurulu surumu acmaya yonlendiriyor.
+
+---
+
+# 1.0.21
+Guncelleme sistemi kokten onarildi: yeni surum once ayri bir klasore acilir, eski kurulum kaldirilip tek hamlede yerine konur ve kurulan dosyalar birebir dogrulanir - 'guncelleme indi ama uygulama eski surumde kaldi' sorunu kapandi; dosyalar kilitliyse acik hata ve cozum yolu gosterilir. Installer ve uygulamadaki surum kontrolune zaman asimi eklendi (sonsuz spinner bitti). YouTube SSL/baglanti hatalarinda (orn. INVALID_SESSION_ID) indirme IPv4 ve alternatif oynaticilarla otomatik yeniden denenir. Instagram story/gonderi: tarayici cerezi okunamazsa uygulama ici Instagram giris penceresi acilir; bir kez giris yeterli, oturum kalicidir.
